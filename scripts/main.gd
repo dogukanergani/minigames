@@ -5,7 +5,11 @@ extends Control
 
 enum Phase { MINIGAME, RESULTS, SHOP, SHOP_DONE, BATTLE, BATTLE_DONE }
 
-const MINIGAMES := ["res://minigames/reaction.tscn"]
+const MINIGAMES := [
+	"res://minigames/reaction.tscn",
+	"res://minigames/run.tscn",
+	"res://minigames/coins.tscn",
+]
 const SHOP_SCENE := "res://shop/shop.tscn"
 const BATTLE_SCENE := "res://battle/battle.tscn"
 const RESULTS_TIME := 6.0  # sonuç ekranı
@@ -64,7 +68,17 @@ func _mark_ready(id: int) -> void:
 
 func _next_round() -> void:
 	if multiplayer.is_server():
-		_begin_minigame.rpc(MINIGAMES.pick_random())
+		_begin_minigame.rpc(_pick_minigame())
+
+
+## Test için host'a `minigame=run` gibi bir argüman verilirse o minigame seçilir.
+func _pick_minigame() -> String:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("minigame="):
+			var path := "res://minigames/%s.tscn" % a.get_slice("=", 1)
+			if MINIGAMES.has(path):
+				return path
+	return MINIGAMES.pick_random()
 
 
 func _go_shop() -> void:
