@@ -164,6 +164,9 @@ var net_n := 0
 var net_last_ms := 0
 var net_gap_sum := 0
 var net_gap_max := 0
+var shots_dir := ""
+var shot_n := 0
+var shot_last := 0
 var net_late := 0  # 100 ms'den uzun aralıkların sayısı (takılma göstergesi)
 
 
@@ -172,6 +175,9 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	is_auto = "auto" in args
 	stress = "stress" in args
+	for a in args:
+		if a.begins_with("shots="):
+			shots_dir = a.substr(6)
 	if "fast" in args:
 		captures_to_win = 1
 		respawn_time = 1.0
@@ -257,6 +263,12 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 			weapons.append(w)
 	if weapons.is_empty():
 		weapons.append("fist")
+	var wsel_i := 0
+	for a in OS.get_cmdline_user_args():  # test: `wp=bow` verilen silahla başla
+		if a.begins_with("wp=") and WEAPONS.has(a.substr(3)):
+			if not weapons.has(a.substr(3)):
+				weapons.append(a.substr(3))
+			wsel_i = weapons.find(a.substr(3))
 	var armor := 0.0
 	for s in SHIELD:
 		if inv.has(s):
@@ -277,7 +289,7 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 		"team": team, "idx": idx, "pos": pos, "cur": pos,
 		"hp": max_hp, "max_hp": max_hp, "alive": true, "respawn": 0.0, "carrying": -1,
 		"aim": 0.0 if team == 0 else PI, "cd": 0.0, "atk_vis": 0.0,
-		"weapons": weapons, "wsel": 0, "armor": armor, "speed": spd, "walls": wall_list,
+		"weapons": weapons, "wsel": wsel_i, "armor": armor, "speed": spd, "walls": wall_list,
 		"cmd": 0,
 		"abil": abil, "ab_cd": [0.0, 0.0], "shield_t": 0.0, "rally_t": 0.0,
 	}
@@ -996,7 +1008,7 @@ func _make_snapshot() -> Dictionary:
 		fl.append([f.pos.x, f.pos.y, f.state])
 	var prs := []
 	for pr in projectiles:
-		prs.append([pr.pos.x, pr.pos.y, pr.team, pr.has("aoe")])
+		prs.append([pr.pos.x, pr.pos.y, pr.team, pr.has("aoe"), roundi((pr.vel.angle() + PI) / TAU * 256.0) & 255])
 	var ws := []
 	for w in walls:
 		ws.append([w.rect.position.x, w.rect.position.y, w.hp, w.max, w.team])
@@ -1061,7 +1073,7 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 			| (int(a[18]) << 16) | (int(a[19]) << 17))
 	for pr in s.pr:
 		out.append(_q(pr[0]) | (_q(pr[1]) << 16))
-		out.append(int(pr[2]) | (int(pr[3]) << 1))
+		out.append(int(pr[2]) | (int(pr[3]) << 1) | (int(pr[4]) << 2))  # bit 2-9: yön (8 bit)
 	for w in s.w:
 		out.append(_q(w[0]) | (_q(w[1]) << 16))
 		out.append(clampi(ceili(w[2]), 0, 511) | (clampi(int(w[3]), 0, 511) << 9) | (int(w[4]) << 18))
@@ -1104,7 +1116,8 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 	snap_ack = acks
 	var prs := []
 	for k in n_pr:
-		prs.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, a[i + 1] & 1, ((a[i + 1] >> 1) & 1) == 1])
+		prs.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, a[i + 1] & 1, ((a[i + 1] >> 1) & 1) == 1,
+			float((a[i + 1] >> 2) & 255) / 256.0 * TAU - PI])
 		i += 2
 	var ws := []
 	for k in n_w:
@@ -1328,7 +1341,7 @@ func _bot_input() -> Dictionary:
 			print("[bot] düşman kahraman öldü")
 		else:
 			target = Vector2(enemy[0], enemy[1])
-			res.atk = mypos.distance_to(target) < 30.0
+			res.atk = mypos.distance_to(target) < (110.0 if me[8] == "bow" else 30.0)
 	if bot_kill_done:
 		if me[6] >= 0:
 			target = FLAG_HOME[0]
@@ -1337,7 +1350,8 @@ func _bot_input() -> Dictionary:
 	var d := target - mypos
 	res.aim = d.angle()
 	res.cur = target
-	if d.length() > 14.0 or bot_kill_done:
+	var stop_d := 80.0 if (me[8] == "bow" and not bot_kill_done) else 14.0  # yaylı bot uzaktan ateş eder
+	if d.length() > stop_d or bot_kill_done:
 		res.mv = d.normalized() if d.length() > 2.0 else Vector2.ZERO
 	return res
 
@@ -1378,6 +1392,10 @@ func _process(delta: float) -> void:
 	feed = feed.filter(func(e): return e[1] > 0.0)
 	queue_redraw()
 	hud.queue_redraw()
+	if shots_dir != "" and not snap.pr.is_empty() and shot_n < 60 and Time.get_ticks_msec() - shot_last > 70:
+		shot_last = Time.get_ticks_msec()  # test: mermi havadayken ekran görüntüsü (shots=<klasör>)
+		get_viewport().get_texture().get_image().save_png("%s/b%d_%03d.png" % [shots_dir, my_id, shot_n])
+		shot_n += 1
 
 
 # ============================ ÇİZİM ============================
@@ -1473,12 +1491,15 @@ func _draw() -> void:
 			draw_rect(Rect2(upos.x - uh, bar_y, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
 
 	for pr in snap.pr:
-		if Art.custom and Art.draw_projectile(self, Vector2(pr[0], pr[1]), pr[2], pr[3]):
+		if Art.available and Art.draw_projectile(self, Vector2(pr[0], pr[1]), pr[2], pr[3], pr[4]):
 			pass
 		elif pr[3]:  # top mermisi
 			draw_circle(Vector2(pr[0], pr[1]), 2.5, Color(0.2, 0.2, 0.22))
-		else:
-			draw_rect(Rect2(pr[0] - 1.5, pr[1] - 1.5, 3.0, 3.0), Color(1.0, 0.95, 0.5))
+		else:  # kutu yedeği: yöne dönük ok çizgisi + uç
+			var pd := Vector2.from_angle(pr[4])
+			var pp := Vector2(pr[0], pr[1])
+			draw_line(pp - pd * 4.0, pp + pd * 3.0, Color(1.0, 0.95, 0.5), 1.5)
+			draw_circle(pp + pd * 3.0, 1.5, Color.WHITE)
 	for bm in snap.bm:  # patlama (kısa süre görünür)
 		booms_vis.append([Vector2(bm[0], bm[1]), bm[2], 0.3])
 	snap.bm = []
@@ -1493,18 +1514,20 @@ func _draw() -> void:
 		var a: Array = snap.p[id]
 		var pos: Vector2 = view_pos.get(id, Vector2(a[0], a[1]))
 		var col: Color = TEAM_COLORS[a[4]]
-		if not a[5]:
-			draw_line(pos - Vector2(5, 5), pos + Vector2(5, 5), _tint(col, 0.5), 1.0)
-			draw_line(pos - Vector2(5, -5), pos + Vector2(5, -5), _tint(col, 0.5), 1.0)
+		var mine: bool = id == my_id
+		if not a[5]:  # ölü: sönük halka, çarpı ve yeniden doğma sayacı
+			_draw_hero_ring(pos, col, mine, false)
+			draw_line(pos - Vector2(5, 5), pos + Vector2(5, 5), _tint(col, 0.6), 1.0)
+			draw_line(pos - Vector2(5, -5), pos + Vector2(5, -5), _tint(col, 0.6), 1.0)
+			_text(self, pos + Vector2(-12, -9), "%d" % int(a[10]), 9, Color(1, 1, 1, 0.85), 24.0, HORIZONTAL_ALIGNMENT_CENTER)
 			continue
+		_draw_hero_ring(pos, col, mine, true)  # sprite'ın altında: takım halkası
 		var top := 13.0  # can çubuğu ve isim için kahramanın üstündeki boşluk
 		if Art.available and _draw_hero_sprite(id, a, pos):
 			top = Art.hero_top()
-			if id == my_id:  # kendi kahramanımın altında beyaz halka
-				draw_arc(pos + Vector2(0, 4), 12.0, 0.0, TAU, 20, Color(1, 1, 1, 0.75), 1.0)
 		else:
 			draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
-			var outline := Color.WHITE if id == my_id else Color(0.05, 0.05, 0.08)
+			var outline := Color.WHITE if mine else Color(0.05, 0.05, 0.08)
 			draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
 		if a[18]:  # Kalkan Patlaması koruması
 			draw_arc(pos, 11.0, 0.0, TAU, 20, Color(0.4, 0.8, 1.0, 0.9), 1.5)
@@ -1522,13 +1545,55 @@ func _draw() -> void:
 		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0, 2.0), Color(0.3, 0.05, 0.05))
 		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0 * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
 		if a[6] >= 0:
-			draw_rect(Rect2(pos.x - 1.0, pos.y - top - 11.0, 8.0, 6.0), TEAM_COLORS[a[6]])
+			draw_rect(Rect2(pos.x + 16.0, pos.y - top - 9.0, 7.0, 5.0), TEAM_COLORS[a[6]])
 		_text(self, pos + Vector2(-24, -top - 3.0), _name_of(id), 8, _tint(Color.WHITE, 0.85), 48.0, HORIZONTAL_ALIGNMENT_CENTER)
+		_draw_hero_marker(pos + Vector2(0, -top - 12.0), col, mine)
 
 	# Saldır komutundayken imleç işareti
 	if snap.p.has(my_id) and snap.p[my_id][12] == 1:
 		var c := get_global_mouse_position()
 		draw_arc(c, 6.0, 0.0, TAU, 10, Color(1, 1, 1, 0.6), 1.0)
+
+
+## Elips noktaları (ayak halkası için).
+func _ellipse_pts(c: Vector2, rx: float, ry: float, n := 24) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for k in n + 1:
+		var ang := TAU * float(k) / float(n)
+		pts.append(c + Vector2(cos(ang) * rx, sin(ang) * ry))
+	return pts
+
+
+## Kahramanın ayağının altında takım renginde halka. Kendi kahramanım: altın dış halka, daha kalın, nabız atar.
+func _draw_hero_ring(pos: Vector2, col: Color, mine: bool, alive: bool) -> void:
+	var c := pos + Vector2(0, 4.0)
+	var k := 1.0 if alive else 0.3
+	if mine:
+		var pulse := 0.5 + 0.5 * sin(float(Time.get_ticks_msec()) / 1000.0 * 5.0)
+		var rx := 12.0 + pulse * 1.5
+		draw_colored_polygon(_ellipse_pts(c, rx, rx * 0.5), _tint(col.lightened(0.15), (0.35 + 0.15 * pulse) * k))
+		draw_polyline(_ellipse_pts(c, rx, rx * 0.5), _tint(col.lightened(0.45), 0.95 * k), 2.0)
+		draw_polyline(_ellipse_pts(c, rx + 2.5, (rx + 2.5) * 0.5), Color(1.0, 0.85, 0.25, (0.55 + 0.4 * pulse) * k), 1.0)
+	else:
+		draw_colored_polygon(_ellipse_pts(c, 10.0, 5.0), _tint(col, 0.35 * k))
+		draw_polyline(_ellipse_pts(c, 10.0, 5.0), _tint(col.lightened(0.3), 1.0 * k), 1.5)
+
+
+## Başın üstünde işaret: kendi kahramanım = altın taç, diğerleri = takım renginde ok. Birimlerde yok.
+func _draw_hero_marker(p: Vector2, col: Color, mine: bool) -> void:
+	p.y += roundf(sin(float(Time.get_ticks_msec()) / 1000.0 * 4.0))
+	var edge := Color(0.08, 0.05, 0.05)
+	if mine:
+		var pts := PackedVector2Array([p + Vector2(-5, 0), p + Vector2(-5, -6), p + Vector2(-2.5, -3), p + Vector2(0, -7),
+			p + Vector2(2.5, -3), p + Vector2(5, -6), p + Vector2(5, 0)])
+		draw_colored_polygon(pts, Color(1.0, 0.82, 0.2))
+		pts.append(pts[0])
+		draw_polyline(pts, edge, 1.0)
+	else:
+		var tri := PackedVector2Array([p + Vector2(-4, -6), p + Vector2(4, -6), p + Vector2(0, 0)])
+		draw_colored_polygon(tri, col.lightened(0.2))
+		tri.append(tri[0])
+		draw_polyline(tri, edge, 1.0)
 
 
 ## Animasyon karesi: zamanla ilerler, `phase` birimlerin aynı anda adım atmasını bozar.
