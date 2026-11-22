@@ -118,6 +118,13 @@ var bot_kill_done := false
 var bot_cmd_sent := false
 var is_auto := false
 
+# Ağ ölçümü (istemcide, test modunda savaş sonunda yazdırılır)
+var net_n := 0
+var net_last_ms := 0
+var net_gap_sum := 0
+var net_gap_max := 0
+var net_late := 0  # 100 ms'den uzun aralıkların sayısı (takılma göstergesi)
+
 
 func _ready() -> void:
 	my_id = multiplayer.get_unique_id()
@@ -876,6 +883,15 @@ func _make_snapshot() -> Dictionary:
 
 @rpc("authority", "unreliable")
 func _snapshot(s: Dictionary) -> void:
+	var now := Time.get_ticks_msec()
+	if net_last_ms > 0:
+		var gap := now - net_last_ms
+		net_gap_sum += gap
+		net_gap_max = maxi(net_gap_max, gap)
+		if gap > 100:
+			net_late += 1
+	net_last_ms = now
+	net_n += 1
 	snap = s
 
 
@@ -915,6 +931,9 @@ func _battle_over(winner: int, final_scores: Array, lost: Dictionary) -> void:
 	camera.enabled = false  # sonuç ekranı kamerayla kaymasın
 	for id in lost.keys():
 		Game.remove_units(id, lost[id])  # ölen birimler kalıcı olarak gider
+	if is_auto and net_n > 1:
+		print("[net %d] anlık görüntü=%d  ort aralık=%.1f ms  maks=%d ms  100ms'den uzun=%d" % [
+			my_id, net_n, float(net_gap_sum) / float(net_n - 1), net_gap_max, net_late])
 	if is_auto:
 		var counts := {}
 		for id in Net.players.keys():

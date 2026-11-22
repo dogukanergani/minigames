@@ -33,6 +33,15 @@ $g = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Micros
   Start-Process $g -ArgumentList "--headless","--path",".","res://scenes/net_test.tscn","--","join","auto","fast" -RedirectStandardOutput join.txt -PassThru
   ```
   İki çıktıda da `SAVAŞ BİTTİ: kazanan=...` satırı ve hata çıktısı (`.err`) boş olmalı.
+- **Kötü internet taklidi** (arkadaşsız ağ testi): `tests/netsim.py` istemci ile sunucu arasına gecikme/titreşim/paket kaybı koyar.
+  Host normal çalışır (port 7777), bozucu 7778'de dinler, istemci `port=7778` argümanıyla bozucuya bağlanır:
+  ```
+  python tests/netsim.py --listen 7778 --target 7777 --latency 120 --jitter 40 --loss 8 --seconds 150
+  # host:    ... -- host auto fast timeout=40
+  # istemci: ... -- join auto fast timeout=40 port=7778
+  ```
+  Savaş sonunda istemci `[net ...] anlık görüntü=... ort aralık=... maks=...` satırı yazar (takılma göstergesi).
+  5v5 ölçeği için: `host players=10` + 9 istemci (`join idx=1..9`), hepsi aynı bilgisayarda çalışır.
 - El ile deneme (iki pencere): `--resolution 640x360 -- quick-host` ve `-- quick-join` argümanlarıyla iki ayrı örnek aç.
 - Değişiklikten sonra mutlaka tam tur testini çalıştır. Çalışmayan şeyi "bitti" diye bildirme.
 

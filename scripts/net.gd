@@ -8,6 +8,9 @@ signal join_failed
 signal lost_connection
 
 const PORT := 7777
+## Kullanılan port. Test için `-- port=7778` argümanıyla değiştirilebilir
+## (ağ bozucu tests/netsim.py araya girsin diye istemci farklı porta bağlanır).
+var port := PORT
 const MAX_PLAYERS := 10  # 5v5
 const TEAM_SIZE := 5
 const TEAM_NAMES := ["Mavi", "Kırmızı"]
@@ -19,6 +22,9 @@ var in_game := false
 
 
 func _ready() -> void:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("port="):
+			port = int(a.get_slice("=", 1))
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
@@ -29,7 +35,7 @@ func _ready() -> void:
 
 func host(player_name: String) -> Error:
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(PORT, MAX_PLAYERS - 1)
+	var err := peer.create_server(port, MAX_PLAYERS - 1)
 	if err != OK:
 		return err
 	local_name = _clean_name(player_name)
@@ -42,7 +48,7 @@ func host(player_name: String) -> Error:
 
 func join(ip: String, player_name: String) -> Error:
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip.strip_edges(), PORT)
+	var err := peer.create_client(ip.strip_edges(), port)
 	if err != OK:
 		return err
 	local_name = _clean_name(player_name)
