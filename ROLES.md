@@ -13,6 +13,14 @@ Bir dosyanın tek sahibi vardır. Sahibi olmayan o dosyaya **yazmaz**, değişik
 | **Ağ / Altyapı** (sonra) | `scripts/net.gd`, `scripts/lobby.gd` | Bağlantı, tahmin (prediction), hile koruması, ayrı sunucu |
 | **Sanat / Arayüz** (sonra) | `assets/*` | Pixel art, yazı tipi, menüler |
 
+## İstisna: `scripts/items.gd` ortak dosya
+- **Savaş / Yapay zekâ**, yeni **birim** satırlarını (`"kind": "Birim"`) listenin **sonuna** ekleyebilir. Başka satıra dokunmaz.
+- **Market / Ekonomi** birim olmayan satırları ve fiyatları yönetir. Birim satırlarının fiyatı için Savaş rolüyle yönetici üzerinden konuşur.
+- Birleştirmede çakışma olursa yönetici çözer.
+
+## Yeni minigame ekleme
+- **Minigame** rolü sahnesini `minigames/` altına koyar ama `scripts/main.gd` içindeki `MINIGAMES` listesine **yönetici** ekler (raporda yolunu yaz).
+
 ## Kurallar
 - **Her oturum kendi dalında çalışır:** `git switch -c <rol>/<konu>`. Yönetici inceleyip `main`'e birleştirir.
 - Ortak dosyalarda (`main.gd`, `game.gd`, `project.godot`) değişiklik gerekiyorsa raporunun "yöneticiden istekler" bölümüne tam olarak ne istediğini yaz.
