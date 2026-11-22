@@ -118,6 +118,18 @@ var bot_kill_done := false
 var bot_cmd_sent := false
 var is_auto := false
 
+# Kendi kahramanın için istemci tarafı tahmin (prediction): girdi hemen uygulanır,
+# sunucu cevabı gelince "onaylanmamış" girdiler yeniden oynatılarak düzeltilir.
+var in_seq := 0  # gönderilen girdi paketi sayacı (sunucu son aldığını geri bildirir)
+var held_mv := Vector2.ZERO  # son gönderilen yön (sunucu da bunu uygular)
+var pred_pos := Vector2.ZERO
+var pred_valid := false
+var pending: Array = []  # [seq, mv, dt] onaylanmamış kareler
+var snap_ack: Dictionary = {}  # peer_id -> sunucunun aldığı son seq (8 bit)
+var pred_err_sum := 0.0
+var pred_err_max := 0.0
+var pred_n := 0
+
 # Ağ ölçümü (istemcide, test modunda savaş sonunda yazdırılır)
 var net_n := 0
 var net_last_ms := 0
@@ -284,7 +296,7 @@ func _physics_process(delta: float) -> void:
 		tick += 1
 		if tick % 2 == 0:
 			snap = _make_snapshot()
-			_snapshot.rpc(snap)
+			_snapshot.rpc(_pack_snapshot(snap))
 			_snapshot_units.rpc(_pack_units())
 		if stress:
 			var ms := float(Time.get_ticks_usec() - t0) / 1000.0
@@ -300,6 +312,7 @@ func _physics_process(delta: float) -> void:
 	if send_acc >= SEND_INTERVAL and not snap.is_empty() and not over:
 		send_acc = 0.0
 		_send_input()
+	_predict_step(delta)
 
 
 func _sim(delta: float) -> void:
@@ -801,14 +814,18 @@ func _name_of(id: int) -> String:
 # --- İstemciden gelen girdiler ---
 
 @rpc("any_peer", "unreliable")
-func _srv_input(mv: Vector2, aim: float, atk: bool, cur: Vector2) -> void:
+func _srv_input(mv: Vector2, aim: float, atk: bool, cur: Vector2, seq: int) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
 	if id == 0:
 		id = 1
+	# Sunucu geç gelen / sırası bozuk paketi eskisinin üstüne yazmasın (8 bit sayaç, mod 256)
+	var old: Dictionary = inputs.get(id, {})
+	if old.has("seq") and ((seq - int(old.seq)) & 255) >= 128:
+		return
 	inputs[id] = {"mv": mv.limit_length(1.0), "aim": aim, "atk": atk,
-		"cur": cur.clamp(Vector2.ZERO, ARENA.size)}
+		"cur": cur.clamp(Vector2.ZERO, ARENA.size), "seq": seq & 255}
 
 
 @rpc("any_peer", "reliable")
@@ -882,7 +899,7 @@ func _make_snapshot() -> Dictionary:
 
 
 @rpc("authority", "unreliable")
-func _snapshot(s: Dictionary) -> void:
+func _snapshot(packed: PackedInt32Array) -> void:
 	var now := Time.get_ticks_msec()
 	if net_last_ms > 0:
 		var gap := now - net_last_ms
@@ -892,7 +909,176 @@ func _snapshot(s: Dictionary) -> void:
 			net_late += 1
 	net_last_ms = now
 	net_n += 1
-	snap = s
+	snap = _unpack_snapshot(packed)
+	_reconcile()
+
+
+# --- Anlık görüntü paketleme ---
+# Tek PackedInt32Array (5v5'te ~300 bayt). Eskiden Dictionary olarak gidiyordu, 10 oyuncuda 1639 bayt
+# ile MTU'yu (1392) aşıyordu: paket parçalanır, bir parça kaybolunca tüm görüntü düşerdi.
+# Konum 1/8 piksel (16 bit), açı 8 bit. İstemcide açılınca eski Dictionary biçimi aynen geri gelir.
+
+func _q(v: float) -> int:
+	return clampi(roundi(v * 8.0), 0, 65535)
+
+
+func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var weapon_order: Array = WEAPONS.keys()
+	out.append(roundi(s.t * 10.0))
+	out.append(int(s.s[0]) | (int(s.s[1]) << 8))
+	out.append(clampi(roundi(s.cd * 10.0), 0, 65535) | (int(s.sd) << 16))
+	out.append(s.p.size())
+	out.append(s.pr.size())
+	out.append(s.w.size())
+	out.append(s.bm.size())
+	for f in s.f:
+		out.append(_q(f[0]) | (_q(f[1]) << 16))
+		out.append(int(f[2]))
+	for id in s.p.keys():
+		var a: Array = s.p[id]
+		out.append(int(id))
+		out.append(_q(a[0]) | (_q(a[1]) << 16))
+		out.append(clampi(ceili(a[2]), 0, 511) | (clampi(int(a[3]), 0, 511) << 9) | (int(a[4]) << 18)
+			| (int(a[5]) << 19) | ((int(a[6]) + 1) << 20) | (maxi(weapon_order.find(a[8]), 0) << 22)
+			| (int(a[12]) << 25) | (int(a[9] > 0.0) << 27))
+		var aim8 := roundi((float(a[7]) + PI) / TAU * 256.0) & 255
+		var ack := int(inputs.get(id, {}).get("seq", 0)) & 255
+		out.append(aim8 | (clampi(ceili(a[10]), 0, 15) << 8) | (clampi(int(a[11]), 0, 15) << 12)
+			| (clampi(int(a[13]), 0, 63) << 16) | (ack << 22))
+	for pr in s.pr:
+		out.append(_q(pr[0]) | (_q(pr[1]) << 16))
+		out.append(int(pr[2]) | (int(pr[3]) << 1))
+	for w in s.w:
+		out.append(_q(w[0]) | (_q(w[1]) << 16))
+		out.append(clampi(ceili(w[2]), 0, 511) | (clampi(int(w[3]), 0, 511) << 9) | (int(w[4]) << 18))
+	for bm in s.bm:
+		out.append(_q(bm[0]) | (_q(bm[1]) << 16))
+		out.append(clampi(roundi(bm[2] * 8.0), 0, 65535))
+	return out
+
+
+func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
+	var weapon_order: Array = WEAPONS.keys()
+	var n_p := a[3]
+	var n_pr := a[4]
+	var n_w := a[5]
+	var n_bm := a[6]
+	var i := 7
+	var fl := []
+	for k in 2:
+		fl.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, a[i + 1]])
+		i += 2
+	var ps := {}
+	var acks := {}
+	for k in n_p:
+		var id := a[i]
+		var pos := a[i + 1]
+		var w2 := a[i + 2]
+		var w3 := a[i + 3]
+		i += 4
+		var wi := (w2 >> 22) & 7
+		ps[id] = [
+			float(pos & 0xFFFF) / 8.0, float((pos >> 16) & 0xFFFF) / 8.0,
+			float(w2 & 511), float((w2 >> 9) & 511), (w2 >> 18) & 1, ((w2 >> 19) & 1) == 1, ((w2 >> 20) & 3) - 1,
+			float(w3 & 255) / 256.0 * TAU - PI,
+			weapon_order[wi] if wi < weapon_order.size() else "fist",
+			0.15 if ((w2 >> 27) & 1) == 1 else 0.0,
+			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63]
+		acks[id] = (w3 >> 22) & 255
+	snap_ack = acks
+	var prs := []
+	for k in n_pr:
+		prs.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, a[i + 1] & 1, ((a[i + 1] >> 1) & 1) == 1])
+		i += 2
+	var ws := []
+	for k in n_w:
+		var v := a[i + 1]
+		ws.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, float(v & 511), float((v >> 9) & 511), (v >> 18) & 1])
+		i += 2
+	var bms := []
+	for k in n_bm:
+		bms.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, float(a[i + 1]) / 8.0])
+		i += 2
+	return {"p": ps, "f": fl, "pr": prs, "w": ws, "t": float(a[0]) / 10.0,
+		"s": [a[1] & 255, (a[1] >> 8) & 255], "cd": float(a[2] & 0xFFFF) / 10.0,
+		"sd": ((a[2] >> 16) & 1) == 1, "bm": bms}
+
+
+# --- Kendi kahramanın için tahmin (prediction) ---
+
+func _my_speed() -> float:
+	var inv: Array = Game.inventory.get(my_id, [])
+	var carrying: bool = snap.p[my_id][6] >= 0
+	return BASE_SPEED * (1.2 if inv.has("boots") else 1.0) * speed_mul * (CARRY_SLOW if carrying else 1.0)
+
+
+func _pred_blocked(r: Rect2) -> bool:
+	if not ARENA.encloses(r):
+		return true
+	for o in OBSTACLES:
+		if o.intersects(r):
+			return true
+	for w in snap.w:
+		if Rect2(w[0], w[1], WALL_SIZE, WALL_SIZE).intersects(r):
+			return true
+	return false
+
+
+func _pred_move(pos: Vector2, mv: Vector2, dt: float) -> Vector2:
+	var d := mv.limit_length(1.0) * _my_speed() * dt
+	var nx := pos + Vector2(d.x, 0.0)
+	if not _pred_blocked(_player_rect(nx)):
+		pos = nx
+	var ny := pos + Vector2(0.0, d.y)
+	if not _pred_blocked(_player_rect(ny)):
+		pos = ny
+	return pos
+
+
+## Her fizik karesinde: girdiyi sunucuyu beklemeden uygula ve kareyi kaydet.
+func _predict_step(dt: float) -> void:
+	if multiplayer.is_server() or snap.is_empty() or over or not snap.p.has(my_id):
+		return
+	var me: Array = snap.p[my_id]
+	if not me[5] or snap.cd > 0.0:  # ölü ya da geri sayım: sunucunun konumuna güven
+		pred_valid = false
+		return
+	if not pred_valid:
+		pred_pos = Vector2(me[0], me[1])
+		pred_valid = true
+		pending.clear()
+	pred_pos = _pred_move(pred_pos, held_mv, dt)
+	pending.append([in_seq, held_mv, dt])
+	if pending.size() > 150:
+		pending.pop_front()
+
+
+## Sunucu cevabı gelince: onaylanan kareleri at, kalanları sunucu konumundan yeniden oynat.
+func _reconcile() -> void:
+	if multiplayer.is_server() or not pred_valid or not snap.p.has(my_id):
+		return
+	var me: Array = snap.p[my_id]
+	if not me[5] or snap.cd > 0.0:
+		pred_valid = false
+		return
+	var ack: int = snap_ack.get(my_id, 0)
+	var kept: Array = []
+	for f in pending:
+		if (f[0] & 255) != ack and ((f[0] - ack) & 255) < 128:  # ack'ten sonraki kareler
+			kept.append(f)
+	pending = kept
+	var target := Vector2(me[0], me[1])
+	for f in pending:
+		target = _pred_move(target, f[1], f[2])
+	var err := pred_pos.distance_to(target)
+	pred_err_sum += err
+	pred_err_max = maxf(pred_err_max, err)
+	pred_n += 1
+	if err > 30.0:
+		pred_pos = target  # ışınlanma / büyük sapma: doğrudan düzelt
+	else:
+		pred_pos = pred_pos.lerp(target, 0.3)  # küçük sapma: yumuşak düzelt
 
 
 ## Birimler ayrı ve sıkıştırılmış gider (50 birim tek pakette MTU'yu aşıyordu): birim başına 4 tamsayı.
@@ -932,8 +1118,9 @@ func _battle_over(winner: int, final_scores: Array, lost: Dictionary) -> void:
 	for id in lost.keys():
 		Game.remove_units(id, lost[id])  # ölen birimler kalıcı olarak gider
 	if is_auto and net_n > 1:
-		print("[net %d] anlık görüntü=%d  ort aralık=%.1f ms  maks=%d ms  100ms'den uzun=%d" % [
-			my_id, net_n, float(net_gap_sum) / float(net_n - 1), net_gap_max, net_late])
+		print("[net %d] anlık görüntü=%d  ort aralık=%.1f ms  maks=%d ms  100ms'den uzun=%d  tahmin hatası ort=%.2f maks=%.1f px (%d düzeltme)" % [
+			my_id, net_n, float(net_gap_sum) / float(net_n - 1), net_gap_max, net_late,
+			pred_err_sum / maxf(float(pred_n), 1.0), pred_err_max, pred_n])
 	if is_auto:
 		var counts := {}
 		for id in Net.players.keys():
@@ -982,11 +1169,13 @@ func _send_input() -> void:
 		aim = bot.aim
 		atk = bot.atk
 		cur = bot.cur
+	in_seq += 1
+	held_mv = mv.limit_length(1.0)
 	if multiplayer.is_server():
-		inputs[1] = {"mv": mv.limit_length(1.0), "aim": aim, "atk": atk,
-			"cur": cur.clamp(Vector2.ZERO, ARENA.size)}
+		inputs[1] = {"mv": held_mv, "aim": aim, "atk": atk,
+			"cur": cur.clamp(Vector2.ZERO, ARENA.size), "seq": in_seq & 255}
 	else:
-		_srv_input.rpc_id(1, mv, aim, atk, cur)
+		_srv_input.rpc_id(1, mv, aim, atk, cur, in_seq & 255)
 
 
 ## Test botu: Mavi takım önce rakibi öldürür, sonra bayrağı alıp getirir. Kırmızı durur.
@@ -1037,6 +1226,9 @@ func _process(delta: float) -> void:
 	for id in snap.p.keys():
 		var a: Array = snap.p[id]
 		var target := Vector2(a[0], a[1])
+		if id == my_id and pred_valid and not multiplayer.is_server():
+			view_pos[id] = pred_pos  # kendi kahramanım: tahmin edilen konum (gecikmesiz)
+			continue
 		if not view_pos.has(id) or view_pos[id].distance_to(target) > 60.0:
 			view_pos[id] = target
 		else:
@@ -1136,12 +1328,15 @@ func _draw() -> void:
 		draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
 		var outline := Color.WHITE if id == my_id else Color(0.05, 0.05, 0.08)
 		draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
-		var dir := Vector2.from_angle(a[7])
+		var aim_a: float = a[7]
+		if id == my_id and not is_auto:
+			aim_a = (get_global_mouse_position() - pos).angle()  # kendi nişanım gecikmesiz
+		var dir := Vector2.from_angle(aim_a)
 		draw_line(pos, pos + dir * 12.0, Color.WHITE, 1.0)
 		if a[9] > 0.0:
 			var reach: float = WEAPONS[a[8]].range
 			if reach > 0.0:
-				draw_arc(pos, reach, a[7] - deg_to_rad(60.0), a[7] + deg_to_rad(60.0), 8, Color(1, 1, 1, 0.8), 1.0)
+				draw_arc(pos, reach, aim_a - deg_to_rad(60.0), aim_a + deg_to_rad(60.0), 8, Color(1, 1, 1, 0.8), 1.0)
 		draw_rect(Rect2(pos.x - 8.0, pos.y - 13.0, 16.0, 2.0), Color(0.3, 0.05, 0.05))
 		draw_rect(Rect2(pos.x - 8.0, pos.y - 13.0, 16.0 * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
 		if a[6] >= 0:

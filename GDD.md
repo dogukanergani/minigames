@@ -126,7 +126,7 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 
 - **Bayrak kuralları:** Düşman bayrağını alıp **kendi bayrağın evdeyse** üssüne getirince sayı. Yerdeki kendi bayrağına dokunan geri gönderir. Yerdeki bayrak 10 sn sonra kendiliğinden eve döner. Taşıyan %15 yavaşlar.
 - **Kazanma:** İlk 3 bayrak ya da 5 dk. Süre dolunca beraberlikte altın bayrak. Dost ateşi yok.
-- **Ağ:** Sunucu simülasyonu çalıştırır, istemciler girdi yollar, ~30 Hz anlık görüntü alır. Tahmin (prediction) yok, LAN dışında kasma olabilir. 🧪 sonra eklenir.
+- **Ağ:** Sunucu simülasyonu çalıştırır, istemciler girdi yollar, ~30 Hz anlık görüntü alır. ✅ Anlık görüntü tek `PackedInt32Array` olarak sıkıştırılmıştır (5v5'te ~300 bayt, MTU 1392 altında). ✅ **Kendi kahramanın için istemci tarafı tahmin (prediction)** var: girdi hemen uygulanır, sunucu cevabı gelince onaylanmamış girdiler yeniden oynatılarak düzeltilir (ping ~240 ms'de ort. sapma ~6 px). Diğer oyuncular ve birimler sunucudan gelen görüntüyle çizilir.
 - **Test:** `net_test` + `fast` argümanı ile otomatik bot testi (öldürme, bayrak, kazanma).
 
 ## 8b. Kahraman + Birlik sistemi (yeni yön, 🧪 taslak)
@@ -180,7 +180,8 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - Klasörler: `scenes/`, `scripts/`, `minigames/`, `shop/`, `battle/`, `net/`, `assets/`
 - Autoload'lar: `Net` (ağ, lobi, takımlar), `Game` (coin, tur)
 - Test: iki başsız (headless) Godot işlemiyle ağ testi (`scenes/net_test.tscn`)
-- Bilinen teknik borç: istemci hile koruması yok, oyun sırasında oyuncu çıkması işlenmiyor, internet üzerinden bağlantı (port yönlendirme/relay) denenmedi.
+- **Ağ testi:** `tests/netsim.py` ile aynı bilgisayarda yapay gecikme/kayıp. Ping ~120-500 ms ve %3-15 kayıpta tam tur bitiyor. Gerçek internet (farklı ağlar) henüz denenmedi.
+- Bilinen teknik borç: istemci hile koruması yok (refleks sonucu istemciden geliyor), oyun sırasında host kopması / oyuncu çıkması tam işlenmiyor (bkz. `tests/BULGULAR.md`), bağlantı kurma çok kötü ağda (%15 kayıp) arada başarısız olabiliyor, ayrı sunucu modu yok, internetten oynamak için port yönlendirme/relay gerekli.
 
 ## 11. Yol haritası
 
