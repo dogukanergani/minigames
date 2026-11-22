@@ -1,6 +1,8 @@
 extends Control
 ## Lobi: oda kur / katıl, takım seç, host oyunu başlatır.
 
+const UiTheme = preload("res://scripts/ui_theme.gd")
+
 var name_edit: LineEdit
 var ip_edit: LineEdit
 var status: Label
@@ -38,66 +40,90 @@ func _ready() -> void:
 
 func _build_ui() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
-	# 640x360 iç çözünürlük için küçük yazı boyutu
-	var ui_theme := Theme.new()
-	ui_theme.default_font_size = 12
-	theme = ui_theme
+	theme = UiTheme.make_theme()  # 640x360 iç çözünürlük: küçük yazı, taş-metal çerçeveler
+	add_child(UiTheme.make_backdrop())
 	var margin := MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_FULL_RECT)
 	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 16)
+		margin.add_theme_constant_override("margin_" + side, 14)
 	add_child(margin)
 
 	var root := VBoxContainer.new()
 	root.add_theme_constant_override("separation", 8)
 	margin.add_child(root)
 
-	var title := Label.new()
-	title.text = "MINIGAMES - LOBİ"
+	var title := UiTheme.banner("banner_gold", "MINIGAMES  -  LOBİ", 16)
+	title.custom_minimum_size = Vector2(0, 30)
 	root.add_child(title)
 
-	status = Label.new()
+	status = UiTheme.make_label("", 12, UiTheme.GOLD_L)
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	root.add_child(status)
 
-	# Bağlantı paneli
+	# Bağlantı paneli (ortada, çerçeveli)
 	connect_box = VBoxContainer.new()
+	connect_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	connect_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	root.add_child(connect_box)
+	var cpanel := PanelContainer.new()
+	cpanel.custom_minimum_size = Vector2(300, 0)
+	cpanel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	connect_box.add_child(cpanel)
+	var cform := VBoxContainer.new()
+	cform.add_theme_constant_override("separation", 6)
+	cpanel.add_child(cform)
+	cform.add_child(UiTheme.make_label("İSMİN", 10, UiTheme.DIM))
 	name_edit = LineEdit.new()
 	name_edit.placeholder_text = "İsmin"
 	name_edit.text = "Oyuncu%d" % randi_range(100, 999)
-	connect_box.add_child(name_edit)
+	cform.add_child(name_edit)
+	cform.add_child(UiTheme.make_label("HOST IP (katılmak için)", 10, UiTheme.DIM))
 	ip_edit = LineEdit.new()
 	ip_edit.placeholder_text = "Host IP (katılmak için)"
 	ip_edit.text = "127.0.0.1"
-	connect_box.add_child(ip_edit)
+	cform.add_child(ip_edit)
 	var row := HBoxContainer.new()
-	connect_box.add_child(row)
+	row.add_theme_constant_override("separation", 6)
+	cform.add_child(row)
 	var host_btn := Button.new()
 	host_btn.text = "Oda Kur"
+	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	host_btn.pressed.connect(_on_host_pressed)
 	row.add_child(host_btn)
 	var join_btn := Button.new()
 	join_btn.text = "Katıl"
+	join_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	join_btn.pressed.connect(_on_join_pressed)
 	row.add_child(join_btn)
 
-	# Oda paneli
+	# Oda paneli: iki takım sütunu
 	room_box = VBoxContainer.new()
+	room_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	room_box.add_theme_constant_override("separation", 8)
 	root.add_child(room_box)
 	var teams := HBoxContainer.new()
-	teams.add_theme_constant_override("separation", 32)
+	teams.add_theme_constant_override("separation", 14)
+	teams.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	room_box.add_child(teams)
 	for t in 2:
 		var col := VBoxContainer.new()
 		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.add_theme_constant_override("separation", 0)
 		teams.add_child(col)
-		var header := Label.new()
+		var header := UiTheme.team_banner(t, "", 13)
+		header.custom_minimum_size = Vector2(0, 22)
 		col.add_child(header)
-		team_titles.append(header)
+		team_titles.append(header.get_child(0) as Label)
+		var panel := PanelContainer.new()
+		panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		col.add_child(panel)
 		var list := VBoxContainer.new()
-		col.add_child(list)
+		list.add_theme_constant_override("separation", 3)
+		panel.add_child(list)
 		team_lists.append(list)
 	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 8)
 	room_box.add_child(buttons)
 	team_btn = Button.new()
 	team_btn.text = "Takım Değiştir"
@@ -163,13 +189,30 @@ func _refresh() -> void:
 	ids.sort()
 	for id in ids:
 		var p: Dictionary = Net.players[id]
-		var label := Label.new()
-		var mark := " ★" if id == 1 else (" ✓" if p.ready else " ...")
-		label.text = p.name + mark + (" (sen)" if id == my_id else "")
-		team_lists[p.team].add_child(label)
+		team_lists[p.team].add_child(_player_row(id, p, id == my_id))
 	start_btn.visible = multiplayer.is_server()
 	ready_btn.visible = not multiplayer.is_server()
 	ready_btn.set_pressed_no_signal(Net.my_ready())
 	if quick_join and not Net.my_ready():
 		Net.set_my_ready(true)  # geliştirici kısayolu
 	status.text = "Oda: %d oyuncu" % Net.players.size()
+
+
+## Oyuncu satırı: durum ikonu (host ★, hazır ✓, bekliyor ...) + ad; kendi satırım altın çerçeveli.
+func _player_row(id: int, p: Dictionary, mine: bool) -> Control:
+	var pc := PanelContainer.new()
+	pc.add_theme_stylebox_override("panel", UiTheme.row_box(mine))
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 6)
+	pc.add_child(h)
+	var mark := "star" if id == 1 else ("check" if p.ready else "dots")
+	h.add_child(UiTheme.icon_rect(mark, 14))
+	var name_l := UiTheme.make_label(p.name, 12, UiTheme.GOLD_L if mine else UiTheme.TEXT)
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_l.clip_text = true
+	h.add_child(name_l)
+	if mine:
+		h.add_child(UiTheme.make_label("sen", 10, UiTheme.DIM))
+	elif id == 1:
+		h.add_child(UiTheme.make_label("host", 10, UiTheme.DIM))
+	return pc

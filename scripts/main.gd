@@ -10,6 +10,8 @@ const MINIGAMES := [
 	"res://minigames/run.tscn",
 	"res://minigames/coins.tscn",
 ]
+const Items = preload("res://scripts/items.gd")
+const UiTheme = preload("res://scripts/ui_theme.gd")
 const SHOP_SCENE := "res://shop/shop.tscn"
 const BATTLE_SCENE := "res://battle/battle.tscn"
 const RESULTS_TIME := 6.0  # sonuç ekranı
@@ -202,16 +204,14 @@ func _clear() -> void:
 func _on_minigame_finished(ranking: Array, labels: Dictionary) -> void:
 	phase = Phase.RESULTS
 	Game.award(ranking)
-	var lines: Array = []
+	var rows: Array = [{"t": "score"}]
 	var my_id := multiplayer.get_unique_id()
 	for i in ranking.size():
 		var id: int = ranking[i]
-		lines.append("%s%d. %s - %s   +%d coin (toplam %d)" % [
-			"> " if id == my_id else "  ", i + 1, _name_of(id), labels.get(id, ""),
-			Game.coins_for_rank(i), Game.coins.get(id, 0)])
+		rows.append({"t": "rank", "i": i, "id": id, "label": labels.get(id, ""),
+			"gain": Game.coins_for_rank(i), "total": Game.coins.get(id, 0)})
 	var wait := 1.0 if auto_test else RESULTS_TIME
-	lines.push_front(_score_line())
-	_show_overlay("TUR %d SONUÇLARI" % Game.round_no, lines, "Market", wait)
+	_show_overlay("TUR %d SONUÇLARI" % Game.round_no, rows, "Market", wait)
 	_after(wait, Phase.RESULTS, _go_shop)
 	if auto_test:
 		print("[main ", my_id, "] SONUÇ: ", ranking, " ", labels, " coin: ", Game.coins)
@@ -219,14 +219,12 @@ func _on_minigame_finished(ranking: Array, labels: Dictionary) -> void:
 
 func _on_shop_finished() -> void:
 	phase = Phase.SHOP_DONE
-	var lines: Array = []
+	var rows: Array = [{"t": "score"}]
 	var my_id := multiplayer.get_unique_id()
 	for id in Game.last_ranking:
-		lines.append("%s%s: %s   (kalan %d coin)" % [
-			"> " if id == my_id else "  ", _name_of(id), Game.inventory_text(id), Game.coins.get(id, 0)])
+		rows.append({"t": "inv", "id": id, "coins": Game.coins.get(id, 0)})
 	var wait := 1.0 if auto_test else SUMMARY_TIME
-	lines.push_front(_score_line())
-	_show_overlay("MARKET BİTTİ", lines, "Savaş", wait)
+	_show_overlay("MARKET BİTTİ", rows, "Savaş", wait)
 	_after(wait, Phase.SHOP_DONE, _go_battle)
 	if auto_test:
 		print("[main ", my_id, "] MARKET: ", Game.inventory, " coin: ", Game.coins)
@@ -236,23 +234,21 @@ func _on_battle_finished(winner: int, scores: Array) -> void:
 	round_wins[winner] += 1
 	var match_over: bool = round_wins[winner] >= rounds_to_win
 	phase = Phase.MATCH_DONE if match_over else Phase.BATTLE_DONE
-	var lines: Array = [
-		_score_line(),
-		"Savaşı %s Takım kazandı (bayrak %d - %d). Senin takımın: %s" % [
-			Net.TEAM_NAMES[winner], scores[0], scores[1], Net.TEAM_NAMES[Net.my_team()]],
-		"Kalan birimler (ölenler kalıcı gitti):",
-	]
+	var rows: Array = [{"t": "score"}]
+	if not match_over:
+		rows.append({"t": "winner", "team": winner, "text": "SAVAŞI %s TAKIM KAZANDI   (bayrak %d - %d)" % [
+			Net.TEAM_NAMES[winner].to_upper(), scores[0], scores[1]]})
+	rows.append({"t": "text", "text": "Kalan birimler (ölenler kalıcı gitti):"})
 	for id in Game.last_ranking:
-		lines.append("  %s: %d birim" % [_name_of(id), Game.unit_count(id)])
+		rows.append({"t": "units", "id": id})
 	var in_test := auto_test and not full_match  # test: ilk savaştan sonra çık
 	if match_over:
 		var end_wait := 1.0 if auto_test else MATCH_END_TIME
-		lines.push_front("*** MAÇI %s TAKIM KAZANDI ***" % Net.TEAM_NAMES[winner].to_upper())
-		_show_overlay("MAÇ BİTTİ", lines, "Lobiye dönüş", end_wait)
+		_show_overlay("MAÇ BİTTİ", rows, "Lobiye dönüş", end_wait, winner)
 		_after(end_wait, Phase.MATCH_DONE, _finish_match.bind(winner))
 	else:
 		var next_wait := 1.0 if auto_test else RESULTS_TIME
-		_show_overlay("SAVAŞ BİTTİ", lines, "Sonraki tur", next_wait)
+		_show_overlay("SAVAŞ BİTTİ", rows, "Sonraki tur", next_wait)
 		_after(next_wait, Phase.BATTLE_DONE, _next_round)
 	if auto_test:
 		print("[main ", multiplayer.get_unique_id(), "] SAVAŞ BİTTİ: kazanan=", Net.TEAM_NAMES[winner], " skor=", scores)
@@ -270,50 +266,168 @@ func _finish_match(winner: int) -> void:
 		Net.TEAM_NAMES[winner], round_wins[0], round_wins[1]])
 
 
-func _score_line() -> String:
-	return "Maç: %s %d - %d %s   (ilk %d savaşı kazanan)" % [
-		Net.TEAM_NAMES[0], round_wins[0], round_wins[1], Net.TEAM_NAMES[1], rounds_to_win]
-
-
 # --- Ortak ekran ---
 
 func _name_of(id: int) -> String:
 	return Net.players.get(id, {}).get("name", "?")
 
 
-func _show_overlay(title: String, lines: Array, next_text: String, seconds: float) -> void:
+func _team_of(id: int) -> int:
+	return Net.players.get(id, {}).get("team", 0)
+
+
+## Maç skoru bandı: [Mavi 2] - [1 Kırmızı] + "ilk N savaş".
+func _score_band() -> Control:
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 6)
+	h.alignment = BoxContainer.ALIGNMENT_CENTER
+	for t in 2:
+		var txt := "%s  %d" % [Net.TEAM_NAMES[t].to_upper(), round_wins[t]] if t == 0 else "%d  %s" % [round_wins[t], Net.TEAM_NAMES[t].to_upper()]
+		var b := UiTheme.team_banner(t, txt, 13)
+		b.custom_minimum_size = Vector2(150, 20)
+		if t == 1:
+			var mid := UiTheme.make_label("ilk %d savaş" % rounds_to_win, 10, UiTheme.DIM)
+			mid.custom_minimum_size = Vector2(60, 0)
+			mid.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			h.add_child(mid)
+		h.add_child(b)
+	return h
+
+
+## Oyuncu satırı kutusu: kendi satırım altın tonlu, kenarda takım rengi şeridi.
+func _row_box(id: int, node_children: Array) -> Control:
+	var mine := id == multiplayer.get_unique_id()
+	var pc := PanelContainer.new()
+	var st := UiTheme.row_box(mine).duplicate()
+	if st is StyleBoxTexture:
+		st.content_margin_top = 1
+		st.content_margin_bottom = 1
+		st.content_margin_left = 4
+		st.content_margin_right = 5
+	pc.add_theme_stylebox_override("panel", st)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 6)
+	pc.add_child(h)
+	var stripe := ColorRect.new()
+	stripe.color = UiTheme.TEAM[_team_of(id)]
+	stripe.custom_minimum_size = Vector2(3, 10)
+	h.add_child(stripe)
+	for c in node_children:
+		h.add_child(c)
+	return pc
+
+
+func _expand(l: Control, min_w := 0.0) -> Control:
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l.custom_minimum_size = Vector2(min_w, 0)
+	return l
+
+
+func _fixed(l: Control, w: float) -> Control:
+	l.custom_minimum_size = Vector2(w, 0)
+	return l
+
+
+func _make_row(r: Dictionary) -> Control:
+	var id: int = r.get("id", 0)
+	var mine := id == multiplayer.get_unique_id()
+	var name_col: Color = UiTheme.GOLD_L if mine else UiTheme.TEXT
+	match r.t:
+		"score":
+			return _score_band()
+		"text":
+			return UiTheme.make_label(r.text, 11, UiTheme.DIM)
+		"winner":
+			var wb := UiTheme.team_banner(r.team, r.text, 13)
+			wb.custom_minimum_size = Vector2(0, 22)
+			return wb
+		"rank":
+			var i: int = r.i
+			var rank_node: Control
+			if i < 3 and UiTheme.icon_tex("medal_%d" % (i + 1)) != null:
+				rank_node = UiTheme.icon_rect("medal_%d" % (i + 1), 16)
+			else:
+				var rl := UiTheme.make_label("%d." % (i + 1), 12, UiTheme.DIM)
+				rl.custom_minimum_size = Vector2(16, 0)
+				rl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				rank_node = rl
+			var gain := UiTheme.coin_amount("+%d" % r.gain, UiTheme.GREEN, 11)
+			gain.custom_minimum_size = Vector2(56, 0)
+			var total := UiTheme.coin_amount("%d" % r.total, UiTheme.GOLD_L, 11)
+			total.custom_minimum_size = Vector2(46, 0)
+			return _row_box(id, [rank_node,
+				_expand(UiTheme.make_label(_name_of(id) + ("  (sen)" if mine else ""), 11, name_col), 110),
+				UiTheme.make_label(str(r.label), 11, UiTheme.DIM), gain, total])
+		"inv":
+			var icons := HFlowContainer.new()
+			icons.add_theme_constant_override("h_separation", 1)
+			icons.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			for item_id in Game.inventory.get(id, []):
+				icons.add_child(UiTheme.icon_rect(item_id, 14))
+			if Game.inventory.get(id, []).is_empty():
+				icons.add_child(UiTheme.make_label("-", 11, UiTheme.DIM))
+			var left := UiTheme.coin_amount(str(r.coins), UiTheme.GOLD_L, 11)
+			left.custom_minimum_size = Vector2(46, 0)
+			return _row_box(id, [_fixed(UiTheme.make_label(_name_of(id) + ("  (sen)" if mine else ""), 11, name_col), 110), icons, left])
+		"units":
+			var icons2 := HBoxContainer.new()
+			icons2.add_theme_constant_override("separation", 1)
+			icons2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			for item_id in Game.inventory.get(id, []):
+				if Items.get_item(item_id).get("kind", "") == "Birim":
+					icons2.add_child(UiTheme.icon_rect(item_id, 14))
+			return _row_box(id, [_expand(UiTheme.make_label(_name_of(id) + ("  (sen)" if mine else ""), 11, name_col), 110),
+				icons2, UiTheme.make_label("%d birim" % Game.unit_count(id), 11, UiTheme.DIM)])
+	return UiTheme.make_label(str(r), 11)
+
+
+func _show_overlay(title: String, lines: Array, next_text: String, seconds: float, winner := -1) -> void:
 	if is_instance_valid(overlay):
 		remove_child(overlay)
 		overlay.queue_free()
 	overlay = Control.new()
 	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.theme = UiTheme.make_theme()
 	add_child(overlay)
-
-	var bg := ColorRect.new()
-	bg.color = Color(0.12, 0.12, 0.16)
-	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	overlay.add_child(bg)
+	overlay.add_child(UiTheme.make_backdrop())
 
 	var margin := MarginContainer.new()
 	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 16)
+		margin.add_theme_constant_override("margin_" + side, 12)
 	overlay.add_child(margin)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 2)  # 5v5'te 18+ satır ekrana sığsın
+	box.add_theme_constant_override("separation", 3)  # 5v5'te 10 satır ekrana sığsın
 	margin.add_child(box)
 
-	var title_label := Label.new()
-	title_label.text = title
-	box.add_child(title_label)
+	if winner >= 0:  # maç sonu: büyük kazanan banner'ı
+		var wb := UiTheme.team_banner(winner, "%s TAKIM KAZANDI!" % Net.TEAM_NAMES[winner].to_upper(), 22)
+		wb.custom_minimum_size = Vector2(0, 34)
+		box.add_child(wb)
+		var mine_won := Net.my_team() == winner
+		var verdict := UiTheme.make_label("MAÇ BİTTİ  -  " + ("ZAFER!" if mine_won else "Yenilgi"), 12, UiTheme.GREEN if mine_won else UiTheme.RED)
+		verdict.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(verdict)
+	else:
+		var tb := UiTheme.banner("banner_gold", title, 16)
+		tb.custom_minimum_size = Vector2(0, 28)
+		box.add_child(tb)
+
+	var panel := PanelContainer.new()
+	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(panel)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 2)
+	panel.add_child(content)
 	for line in lines:
-		var row := Label.new()
-		row.text = line
-		box.add_child(row)
+		if line is Dictionary:
+			content.add_child(_make_row(line))
+		else:
+			content.add_child(UiTheme.make_label(str(line), 11))
 
 	countdown_text = "Sıradaki: " + next_text + " -"
 	countdown_left = seconds
-	countdown_label = Label.new()
-	countdown_label.text = "%s %d sn" % [countdown_text, ceili(seconds)]
+	countdown_label = UiTheme.make_label("%s %d sn" % [countdown_text, ceili(seconds)], 11, UiTheme.GOLD_L)
+	countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(countdown_label)
