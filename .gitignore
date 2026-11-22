@@ -1,0 +1,12 @@
+# Godot
+.godot/
+*.translation
+export_presets.cfg
+.import/
+
+# Geçici / editör
+*.tmp
+*.log
+.vscode/
+.idea/
+.claude/settings.local.json
