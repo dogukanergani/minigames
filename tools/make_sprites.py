@@ -17,12 +17,12 @@ import zlib
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "custom")
 
 # ---------------------------------------------------------------- palet (~24 renk)
-OL = (26, 20, 36, 255)            # koyu çerçeve
-SKIN = (255, 217, 176, 255)
-SKIN_D = (226, 164, 124, 255)
-STEEL = (206, 214, 228, 255)
-STEEL_D = (132, 144, 168, 255)
-GOLD = (255, 208, 72, 255)
+OL = (14, 10, 22, 255)            # koyu çerçeve
+SKIN = (236, 190, 152, 255)
+SKIN_D = (192, 136, 104, 255)
+STEEL = (178, 188, 206, 255)
+STEEL_D = (86, 96, 122, 255)
+GOLD = (240, 190, 56, 255)
 GOLD_D = (200, 138, 40, 255)
 WOOD = (150, 96, 52, 255)
 WOOD_D = (98, 62, 38, 255)
@@ -30,8 +30,8 @@ WHITE = (250, 250, 255, 255)
 LEAF = (88, 170, 74, 255)
 SHADOW = (10, 10, 30, 80)
 TEAMS = {
-	"blue": {"m": (60, 112, 226, 255), "l": (118, 168, 255, 255), "d": (32, 56, 142, 255)},
-	"red": {"m": (224, 70, 60, 255), "l": (255, 128, 106, 255), "d": (142, 32, 40, 255)},
+	"blue": {"m": (40, 84, 204, 255), "l": (92, 146, 244, 255), "d": (18, 34, 108, 255)},
+	"red": {"m": (204, 36, 38, 255), "l": (244, 98, 78, 255), "d": (104, 16, 28, 255)},
 }
 
 
@@ -164,6 +164,14 @@ def shadow(img, cx, cy, rx, ry):
 
 # ---------------------------------------------------------------- kahramanlar (32x32)
 HS = 32
+BONE = (226, 216, 190, 255)
+SCAR = (170, 44, 52, 255)
+
+
+def brows(im, xl, xr, ey, up=3):
+	"""V şeklinde çatık kaşlar: dış uçlar yüksek, iç uçlar (burun üstü) alçak."""
+	fill(im, {(xl - 1, ey - up), (xl, ey - up), (xl, ey - up + 1), (xl + 1, ey - up + 1), (xl + 2, ey - up + 1)}, OL)
+	fill(im, {(xr + 2, ey - up), (xr + 1, ey - up), (xr + 1, ey - up + 1), (xr, ey - up + 1), (xr - 1, ey - up + 1)}, OL)
 
 
 def hero_frame(kind, team, anim, f):
@@ -179,126 +187,155 @@ def hero_frame(kind, team, anim, f):
 		legs = (((-2, 0), (2, 1)), ((0, 1), (0, 0)), ((2, 0), (-2, 1)), ((0, 0), (0, 1)))[f]
 		lean = 1
 	elif anim == "attack":
-		lean = (-1, 1, 2)[f]
-		bob = (0, 0, 1)[f]
+		lean = (-2, 1, 3)[f]
+		bob = (0, 1, 1)[f]
 	cx = 15 + lean
 	shadow(im, 16, 29, 9, 2.5)
-	# pelerin (arkada, uçuşan)
+	# yırtık uzun pelerin
 	flap = (0, 1, 2, 1)[f % 4] + (2 if anim == "run" else 0)
-	cape = poly([(cx - 7, 13 + bob), (cx + 6, 13 + bob), (cx + 7, 26 + bob), (cx - 9 - flap, 28 + bob + (flap // 2))])
+	cape = poly([(cx - 7, 13 + bob), (cx + 6, 13 + bob), (cx + 7, 27 + bob), (cx - 10 - flap, 30 + bob)])
+	cape = {(x, y) for x, y in cape if not (y >= 27 + bob and (x + f) % 3 == 0)}  # tırtıklı etek
 	part(im, cape, T["d"])
-	fill(im, {(x, y) for x, y in cape if y > 20 + bob and x < cx - 3}, T["m"])
+	fill(im, {(x, y) for x, y in cape if y > 21 + bob and x < cx - 3}, T["m"])
 	# bacaklar
 	for i, bx in enumerate((cx - 3, cx + 2)):
 		dx, dy = legs[i]
-		part(im, rect(bx + dx // 2, 24 + bob // 2, bx + 1 + dx // 2, 27 - dy), WOOD_D)
-		part(im, rect(bx + dx - 1, 27 - dy, bx + 2 + dx, 28 - dy), WOOD)
-	# gövde (tunik)
+		part(im, rect(bx + dx // 2, 24 + bob // 2, bx + 1 + dx // 2, 27 - dy), STEEL_D)
+		part(im, rect(bx + dx - 1, 27 - dy, bx + 2 + dx, 28 - dy), WOOD_D)
+	# gövde (koyu zırhlı tunik)
 	body = ell(cx, 19 + bob, 6, 5.5)
 	part(im, body, T["m"])
 	fill(im, {(x, y) for x, y in body if x < cx - 1 and y < 19 + bob}, T["l"])
-	fill(im, rect(cx - 5, 22 + bob, cx + 5, 22 + bob), GOLD_D)  # kemer
-	fill(im, {(cx, 22 + bob), (cx + 1, 22 + bob)}, GOLD)
-	fill(im, {(cx, 17 + bob), (cx + 1, 17 + bob), (cx, 18 + bob), (cx + 1, 18 + bob)}, GOLD)  # göğüs rozeti
-	# silah (kafanın altına, elden çıkar) - gövdeden sonra çizilir
-	hx, hy = cx + 7, 20 + bob  # sağ el
+	fill(im, rect(cx - 5, 22 + bob, cx + 5, 22 + bob), OL)  # kemer
+	fill(im, {(cx, 22 + bob), (cx + 1, 22 + bob)}, GOLD_D)
+	fill(im, {(cx - 1, 17 + bob), (cx + 2, 17 + bob), (cx, 18 + bob), (cx + 1, 18 + bob)}, STEEL)  # göğüs plakası
+	# omuz zırhı (dikenli)
+	for sx, sg in ((cx - 6, -1), (cx + 6, 1)):
+		pad = ell(sx, 15 + bob, 3, 2.3)
+		part(im, pad, STEEL_D)
+		fill(im, {(x, y) for x, y in pad if y < 15 + bob}, STEEL)
+		part(im, poly([(sx - 1, 14 + bob), (sx + sg * 1, 10 + bob), (sx + 2, 14 + bob)]), STEEL)
+		fill(im, {(sx, 16 + bob)}, T["l"])
+	hx, hy = cx + 7, 21 + bob  # sağ el
+	spark = set()
 	if kind == "warrior":
-		# sol kolda kalkan
-		sh = circ(cx - 7, 20 + bob, 4)
-		part(im, sh, T["l"])
-		fill(im, circ(cx - 7, 20 + bob, 1.5), GOLD)
+		sh = circ(cx - 7, 21 + bob, 4)  # sol kolda dikenli kalkan
+		part(im, sh, T["d"])
+		fill(im, circ(cx - 7, 21 + bob, 2.6), T["m"])
+		fill(im, circ(cx - 7, 21 + bob, 1), STEEL)
+		part(im, {(cx - 7, 16 + bob), (cx - 7, 15 + bob)}, STEEL)
 		if anim == "attack":
-			sw = ((hx - 3, hy - 2, hx - 6, hy - 14), (hx, hy - 3, hx + 9, hy - 8), (hx, hy, hx + 8, hy + 7))[f]
+			sw = ((hx - 3, hy - 3, hx - 7, hy - 16), (hx - 1, hy - 4, hx + 6, hy - 10), (hx - 1, hy - 1, hx + 5, hy + 7))[f]
 		elif anim == "run":
-			sw = (hx, hy - 1, hx + 6, hy - 10)
+			sw = (hx, hy - 1, hx + 5, hy - 13)
 		else:
-			sw = (hx, hy - 1, hx + 2, hy - 12)
-		if anim == "attack" and f >= 1:  # savuruş izi
-			a0, a1 = ((-1.9, -0.6), (-0.3, 0.9))[f - 1]
-			for t in range(7):
-				a = a0 + (a1 - a0) * t / 6.0
-				fill(im, {(int(cx + 5 + math.cos(a) * 14), int(19 + bob + math.sin(a) * 14))}, WHITE)
-		part(im, line(sw[0], sw[1], sw[2], sw[3], 2), STEEL)
-		fill(im, line(sw[0], sw[1], sw[2], sw[3], 1), WHITE)
-		gx, gy = sw[0], sw[1]
-		part(im, line(gx - 2, gy + 1, gx + 2, gy - 1, 1), GOLD)
+			sw = (hx, hy - 1, hx + 2, hy - 15)
+		if anim == "attack" and f >= 1:  # geniş savuruş izi
+			a0, a1 = ((-2.1, -0.5), (-0.5, 1.0))[f - 1]
+			for t in range(11):
+				a = a0 + (a1 - a0) * t / 10.0
+				for rr in (11, 12):
+					fill(im, {(int(cx + 4 + math.cos(a) * rr), int(20 + bob + math.sin(a) * rr))}, WHITE if rr == 12 else T["l"])
+			spark = {(sw[2] + 2, sw[3] - 1), (sw[2] + 1, sw[3] + 2), (sw[2] + 3, sw[3] + 1), (sw[2], sw[3] - 3)}
+		part(im, line(sw[0], sw[1], sw[2], sw[3], 3), STEEL_D)
+		fill(im, line(sw[0], sw[1], sw[2], sw[3], 2), STEEL)
+		fill(im, line(sw[0] - 1, sw[1], sw[2] - 1, sw[3], 1), WHITE)
+		ux, uy = sw[2] - sw[0], sw[3] - sw[1]
+		ln = math.hypot(ux, uy)
+		ux, uy = ux / ln, uy / ln
+		for k in (0.35, 0.6, 0.85):  # tırtıklı kenar
+			fill(im, {(int(sw[0] + ux * ln * k - uy * 2.2), int(sw[1] + uy * ln * k + ux * 2.2))}, STEEL_D)
+		part(im, line(sw[0] - 2, sw[1] + 1, sw[0] + 2, sw[1] - 1, 1), GOLD_D)
 	elif kind == "lancer":
 		if anim == "attack":
-			dx = (-3, 2, 0)[f]
-			sp = (hx - 13 + dx, hy + 1, hx + 1 + dx, hy - 1)
+			dx = (-4, 2, 0)[f]
+			sp = (hx - 14 + dx, hy + 1, hx + 1 + dx, hy - 1)
+			if f >= 1:
+				fill(im, {(sp[2] + 6, sp[3] - 2), (sp[2] + 7, sp[3] + 1), (sp[2] + 5, sp[3] + 3)}, GOLD)
 		elif anim == "run":
-			sp = (hx - 7, hy + 6, hx + 8, hy - 7)
+			sp = (hx - 8, hy + 7, hx + 6, hy - 8)
 		else:
-			sp = (hx + 1, hy + 8, hx + 2, hy - 13)
-		part(im, line(sp[0], sp[1], sp[2], sp[3], 1), WOOD)
+			sp = (hx + 1, hy + 9, hx + 2, hy - 14)
+		part(im, line(sp[0], sp[1], sp[2], sp[3], 1), WOOD_D)
 		ux, uy = sp[2] - sp[0], sp[3] - sp[1]
 		ln = math.hypot(ux, uy)
 		ux, uy = ux / ln, uy / ln
-		tip = poly([(sp[2] - ux * 1 - uy * 2.5, sp[3] - uy * 1 + ux * 2.5), (sp[2] + ux * 5, sp[3] + uy * 5),
-			(sp[2] - ux * 1 + uy * 2.5, sp[3] - uy * 1 - ux * 2.5)])
+		tip = poly([(sp[2] - ux * 1 - uy * 3, sp[3] - uy * 1 + ux * 3), (sp[2] + ux * 6, sp[3] + uy * 6),
+			(sp[2] - ux * 1 + uy * 3, sp[3] - uy * 1 - ux * 3)])
 		part(im, tip, STEEL)
-		fill(im, {(int(sp[2] - ux * 2), int(sp[3] - uy * 2))}, T["l"])
-		# flama
-		fx, fy = int(sp[2] - ux * 4), int(sp[3] - uy * 4)
-		fill(im, {(fx, fy), (fx - 1, fy), (fx - 2, fy + 1), (fx - 1, fy + 1)}, T["m"])
+		fill(im, {(int(sp[2] - ux * 2), int(sp[3] - uy * 2))}, WHITE)
+		fx, fy = int(sp[2] - ux * 5), int(sp[3] - uy * 5)  # yırtık flama
+		fill(im, {(fx, fy), (fx - 1, fy), (fx - 2, fy + 1), (fx - 3, fy + 1), (fx - 1, fy + 1), (fx - 3, fy + 2)}, T["m"])
 	elif kind == "archer":
-		# sadak (sırtta)
-		part(im, line(cx - 5, 13 + bob, cx - 7, 22 + bob, 2), WOOD_D)
-		fill(im, {(cx - 5, 12 + bob), (cx - 4, 11 + bob), (cx - 6, 11 + bob)}, WHITE)
-		pull = 0
-		if anim == "attack":
-			pull = (3, 5, 0)[f]
-		bow_x = hx + 3
-		bow = {(int(bow_x + math.cos(a) * 9 * 0.55), int(hy + math.sin(a) * 9)) for a in [i * 0.05 for i in range(-30, 31)]}
-		part(im, bow, WOOD)
-		top, bot = (int(bow_x + math.cos(-1.5) * 5), hy - 9), (int(bow_x + math.cos(1.5) * 5), hy + 9)
+		part(im, line(cx - 5, 12 + bob, cx - 8, 22 + bob, 2), WOOD_D)  # sadak
+		fill(im, {(cx - 5, 11 + bob), (cx - 4, 10 + bob), (cx - 6, 10 + bob), (cx - 7, 11 + bob)}, BONE)
+		pull = (3, 6, 0)[f] if anim == "attack" else 0
+		bow_x = hx + 2
+		arc = [i * 0.05 for i in range(-32, 33)]
+		bow = {(int(bow_x + math.cos(a) * 10 * 0.5), int(hy + math.sin(a) * 10)) for a in arc}
+		bow |= shift(bow, 1, 0)
+		part(im, bow, WOOD_D)
+		top, bot = (int(bow_x + math.cos(-1.6) * 5), hy - 10), (int(bow_x + math.cos(1.6) * 5), hy + 10)
+		part(im, {(top[0] + 1, top[1] - 1), (bot[0] + 1, bot[1] + 1)}, STEEL)  # dikenli uçlar
 		sx = hx - pull + 1
 		fill(im, line(top[0], top[1], sx, hy, 1), WHITE)
 		fill(im, line(sx, hy, bot[0], bot[1], 1), WHITE)
 		if anim == "attack" and f < 2:
 			part(im, line(sx, hy, bow_x + 6, hy, 1), WOOD_D, ol=None)
-			fill(im, {(bow_x + 7, hy), (bow_x + 6, hy - 1), (bow_x + 6, hy + 1)}, STEEL)
-		elif anim == "attack":  # bırakıldı: ok uçuyor
-			part(im, line(bow_x + 4, hy, bow_x + 11, hy, 1), WOOD_D, ol=None)
-			fill(im, {(bow_x + 12, hy), (bow_x + 11, hy - 1), (bow_x + 11, hy + 1)}, STEEL)
-	# sağ el
-	part(im, circ(hx, hy, 1.6), SKIN)
+			fill(im, {(bow_x + 7, hy), (bow_x + 6, hy - 1), (bow_x + 6, hy + 1), (bow_x + 8, hy)}, STEEL)
+		elif anim == "attack":
+			part(im, line(bow_x + 4, hy, bow_x + 10, hy, 1), WOOD_D, ol=None)
+			fill(im, {(bow_x + 11, hy), (bow_x + 10, hy - 1), (bow_x + 10, hy + 1)}, STEEL)
+			spark = {(bow_x + 5, hy - 3), (bow_x + 7, hy + 3)}
+	part(im, circ(hx, hy, 1.7), STEEL_D)  # zırh eldiveni
 	# kafa
 	hdx = lean
-	head = circ(16 + hdx, 10 + bob, 6.6)
+	head = circ(16 + hdx, 10 + bob, 6.4)
 	part(im, head, SKIN)
 	fill(im, {(x, y) for x, y in head if x < 12 + hdx and y > 10 + bob}, SKIN_D)
-	# yüz (sağa bakıyor)
-	ey = 11 + bob
-	fill(im, {(17 + hdx, ey), (17 + hdx, ey + 1), (21 + hdx, ey), (21 + hdx, ey + 1)}, OL)
-	fill(im, {(18 + hdx, ey), (22 + hdx, ey)}, WHITE)
-	fill(im, {(16 + hdx, ey + 3), (22 + hdx, ey + 3)}, (255, 150, 150, 255))
-	fill(im, {(19 + hdx, ey + 4), (20 + hdx, ey + 4)}, SKIN_D)
-	# başlık
+	ey = 12 + bob
+	xl, xr = 16 + hdx, 20 + hdx
+	fill(im, {(xl, ey), (xr, ey), (xl, ey + 1), (xr, ey + 1)}, OL)
+	fill(im, {(xl + 1, ey), (xr + 1, ey)}, WHITE)
+	# sıkılmış dişli ağız
+	fill(im, rect(17 + hdx, ey + 3, 21 + hdx, ey + 3), OL)
+	fill(im, {(18 + hdx, ey + 3), (20 + hdx, ey + 3)}, WHITE)
 	capmask = {(x, y) for x, y in head if y < 9 + bob}
 	if kind == "warrior":
-		fill(im, capmask, STEEL)
-		fill(im, {(x, y) for x, y in capmask if y < 6 + bob and x < 17 + hdx}, WHITE)
-		fill(im, rect(10 + hdx, 9 + bob, 22 + hdx, 9 + bob) & head, STEEL_D)
-		fill(im, line(19 + hdx, 6 + bob, 19 + hdx, 10 + bob, 1), STEEL_D)  # burun siperi
-		crest = poly([(11 + hdx, 5 + bob), (15 + hdx, 1 + bob), (21 + hdx, 3 + bob), (17 + hdx, 6 + bob)])
-		part(im, shift(crest, 0, 0) | {(10 + hdx - flap // 2, 6 + bob), (9 + hdx - flap // 2, 7 + bob)}, T["l"])
-		fill(im, {(15 + hdx, 3 + bob), (16 + hdx, 3 + bob)}, T["m"])
+		fill(im, line(14 + hdx, ey - 1, 15 + hdx, ey + 2, 1), SCAR)  # yara izi
+		fill(im, capmask, STEEL_D)
+		fill(im, {(x, y) for x, y in capmask if y < 7 + bob and x < 17 + hdx}, STEEL)
+		fill(im, rect(10 + hdx, 9 + bob, 22 + hdx, 9 + bob) & head, OL)
+		fill(im, line(19 + hdx, 6 + bob, 19 + hdx, 11 + bob, 1), STEEL_D)  # burun siperi
+		for hs in (-1, 1):  # kıvrık boynuzlar
+			hxx = 16 + hdx + hs * 6
+			part(im, line(hxx, 8 + bob, hxx + hs * 3, 6 + bob, 2) | line(hxx + hs * 3, 6 + bob, hxx + hs * 3, 2 + bob, 2), BONE)
+		crest = poly([(11 + hdx, 5 + bob), (15 + hdx, 0 + bob), (21 + hdx, 3 + bob), (17 + hdx, 6 + bob)])
+		part(im, crest | {(10 + hdx - flap // 2, 6 + bob), (9 + hdx - flap // 2, 7 + bob)}, T["m"])
+		fill(im, {(15 + hdx, 3 + bob), (16 + hdx, 2 + bob)}, T["l"])
 	elif kind == "archer":
-		hood = capmask | {(x, y) for x, y in head if x < 11 + hdx}
-		fill(im, hood, T["m"])
-		fill(im, {(x, y) for x, y in hood if y < 6 + bob}, T["l"])
-		fill(im, rect(10 + hdx, 9 + bob, 22 + hdx, 9 + bob) & head, T["d"])
-		part(im, line(14 + hdx, 4 + bob, 20 + hdx, -1 + bob, 2), LEAF)  # tüy
-		fill(im, {(19 + hdx, 0 + bob), (20 + hdx, -1 + bob)}, WHITE)
+		hood = capmask | {(x, y) for x, y in head if x < 11 + hdx} | {(x, y) for x, y in head if y > ey + 1 and x > 13 + hdx}
+		fill(im, hood, T["d"])  # kukuleta + yüz maskesi
+		fill(im, {(x, y) for x, y in hood if y < 6 + bob and x < 17 + hdx}, T["m"])
+		fill(im, {(xl, ey), (xr, ey)}, OL)
+		fill(im, {(xl + 1, ey), (xr + 1, ey)}, GOLD)  # parlayan göz
+		fill(im, {(xl, ey - 1), (xr, ey - 1)}, T["d"])
+		fill(im, {(14 + hdx, ey), (14 + hdx, ey + 1), (15 + hdx, ey + 2)}, SCAR)  # savaş boyası
+		part(im, line(14 + hdx, 4 + bob, 21 + hdx, -1 + bob, 2), OL)
+		fill(im, line(14 + hdx, 4 + bob, 21 + hdx, -1 + bob, 1), BONE)  # sert tüy/kemik
 	elif kind == "lancer":
-		fill(im, capmask, GOLD)
-		fill(im, {(x, y) for x, y in capmask if y < 6 + bob and x < 16 + hdx}, WHITE)
-		fill(im, rect(10 + hdx, 9 + bob, 22 + hdx, 9 + bob) & head, GOLD_D)
-		wing = poly([(10 + hdx, 8 + bob), (4 + hdx, 3 + bob), (5 + hdx, 8 + bob)]) | poly([(22 + hdx, 8 + bob), (28 + hdx, 3 + bob), (27 + hdx, 8 + bob)])
-		part(im, wing, WHITE)
+		fill(im, capmask, STEEL_D)
+		fill(im, {(x, y) for x, y in capmask if y < 7 + bob and x < 16 + hdx}, GOLD)
+		fill(im, rect(10 + hdx, 9 + bob, 22 + hdx, 9 + bob) & head, OL)
+		fill(im, line(19 + hdx, 6 + bob, 19 + hdx, 11 + bob, 1), GOLD_D)
+		wing = poly([(10 + hdx, 8 + bob), (4 + hdx, 2 + bob), (5 + hdx, 6 + bob), (4 + hdx, 9 + bob)]) | \
+			poly([(22 + hdx, 8 + bob), (28 + hdx, 2 + bob), (27 + hdx, 6 + bob), (28 + hdx, 9 + bob)])
+		part(im, wing, STEEL)
 		part(im, line(16 + hdx, 4 + bob, 16 + hdx, 1 + bob, 3), T["m"])
-		fill(im, line(15 + hdx, 3 + bob, 15 + hdx, 0 + bob, 1), T["l"])
+		fill(im, {(15 + hdx, ey - 1), (16 + hdx, ey - 1)}, T["m"])  # savaş boyası şeridi
+		fill(im, rect(14 + hdx, ey + 1, 16 + hdx, ey + 1), T["m"])
+	brows(im, xl, xr, ey, 2)
+	fill(im, spark, GOLD)
 	return im
 
 
@@ -306,72 +343,98 @@ def hero_frame(kind, team, anim, f):
 US = 24
 
 
+def unit_face(im, cx, ey, mouth=True):
+	fill(im, {(cx + 2, ey), (cx + 2, ey + 1), (cx + 5, ey), (cx + 5, ey + 1)}, OL)
+	fill(im, {(cx + 3, ey), (cx + 6, ey)}, WHITE)
+	fill(im, {(cx + 1, ey - 2), (cx + 2, ey - 1), (cx + 3, ey - 1)}, OL)  # V kaşlar
+	fill(im, {(cx + 6, ey - 2), (cx + 5, ey - 1), (cx + 4, ey - 1)}, OL)
+	if mouth:
+		fill(im, {(cx + 3, ey + 3), (cx + 4, ey + 3), (cx + 5, ey + 3)}, OL)
+		fill(im, {(cx + 4, ey + 3)}, WHITE)
+
+
 def unit_frame(kind, team, anim, f):
 	T = TEAMS[team]
 	im = Img(US, US)
+	if kind == "cannon":
+		return cannon_frame(team, anim, f)
 	bob = 0 if anim == "idle" and f == 0 else (-1 if anim == "idle" else (0, -1, 0, -1)[f])
 	legs = (((-1, 0), (1, 0)), ((0, 1), (0, 0)), ((1, 0), (-1, 0)), ((0, 0), (0, 1)))[f] if anim == "run" else ((0, 0), (0, 0))
 	cx = 11
-	if kind == "cannon":
-		return cannon_frame(team, anim, f)
 	shadow(im, 12, 21, 6, 2)
 	for i, bx in enumerate((cx - 2, cx + 1)):
 		dx, dy = legs[i]
-		part(im, rect(bx + dx, 17, bx + dx, 19 - dy), WOOD_D)
+		part(im, rect(bx + dx, 17, bx + dx, 19 - dy), STEEL_D)
 	robe = kind == "healer"
-	body = ell(cx + 0.5, 14 + bob, 4.2, 4.2) if not robe else poly([(cx - 4, 11 + bob), (cx + 5, 11 + bob), (cx + 6, 19), (cx - 5, 19)])
-	part(im, body, WHITE if robe else T["m"])
-	fill(im, {(x, y) for x, y in body if x < cx and y < 14 + bob}, (225, 230, 245, 255) if robe else T["l"])
-	if robe:
-		fill(im, rect(cx - 1, 14 + bob, cx + 2, 18), T["m"])
+	ROBE = (58, 46, 78, 255)
+	if robe:  # karanlık rahip cüppesi, geniş takım renkli şerit
+		body = poly([(cx - 4, 11 + bob), (cx + 5, 11 + bob), (cx + 7, 20), (cx - 6, 20)])
+		part(im, body, ROBE)
+		fill(im, rect(cx - 1, 12 + bob, cx + 2, 19), T["m"])
+		fill(im, rect(cx - 1, 12 + bob, cx - 1, 19), T["l"])
+		fill(im, rect(cx - 5, 19, cx + 6, 19), T["m"])
 	else:
-		fill(im, rect(cx - 3, 16 + bob, cx + 4, 16 + bob), GOLD_D)
+		body = ell(cx + 0.5, 14 + bob, 4.4, 4.2)
+		part(im, body, T["m"])
+		fill(im, {(x, y) for x, y in body if x < cx and y < 14 + bob}, T["l"])
+		fill(im, rect(cx - 3, 16 + bob, cx + 4, 16 + bob), OL)
 	hx, hy = cx + 5, 14 + bob
 	if kind == "swordsman":
-		atk = 0
-		part(im, line(hx, hy, hx + 2, hy - 8, 2), STEEL)
-		fill(im, {(hx + 1, hy - 7)}, WHITE)
-		fill(im, line(hx - 1, hy - 1, hx + 2, hy - 2, 1), GOLD)
+		part(im, line(hx, hy, hx + 2, hy - 10, 2), STEEL)  # daha iri kılıç
+		fill(im, line(hx - 1, hy - 1, hx + 1, hy - 9, 1), WHITE)
+		fill(im, {(hx + 3, hy - 5)}, STEEL_D)
+		part(im, line(hx - 2, hy - 1, hx + 2, hy - 2, 1), GOLD_D)
 	elif kind == "archer":
-		bow = {(int(hx + 1 + math.cos(a) * 3), int(hy + math.sin(a) * 6)) for a in [i * 0.06 for i in range(-26, 27)]}
-		part(im, bow, WOOD)
-		fill(im, line(hx + 1, hy - 6, hx + 1, hy + 6, 1), WHITE)
+		bow = {(int(hx + 1 + math.cos(a) * 3), int(hy + math.sin(a) * 7)) for a in [i * 0.06 for i in range(-26, 27)]}
+		part(im, bow, WOOD_D)
+		fill(im, line(hx + 1, hy - 7, hx + 1, hy + 7, 1), WHITE)
+		part(im, {(hx + 2, hy - 8), (hx + 2, hy + 8)}, STEEL)
 	elif kind == "shield":
-		part(im, line(hx - 2, hy - 1, hx + 1, hy - 8, 1), STEEL)  # kısa mızrak
+		part(im, line(hx - 2, hy - 1, hx + 1, hy - 9, 1), STEEL)  # kısa mızrak
 	elif kind == "healer":
-		part(im, line(hx, hy + 3, hx, hy - 8, 1), WOOD)
-		part(im, circ(hx, hy - 9, 1.8), GOLD)
-	part(im, circ(hx, hy, 1.2), SKIN)
-	if kind == "shield":  # belirgin büyük kalkan (öne)
+		part(im, line(hx, hy + 4, hx, hy - 8, 1), WOOD_D)
+		part(im, circ(hx, hy - 9, 2.2), T["l"])  # parlayan küre
+		fill(im, {(hx, hy - 10)}, WHITE)
+	part(im, circ(hx, hy, 1.3), STEEL_D if kind != "healer" else ROBE)
+	if kind == "shield":  # belirgin büyük dikenli kalkan (öne)
 		sh = poly([(cx + 1, 8 + bob), (cx + 10, 8 + bob), (cx + 10, 16 + bob), (cx + 5.5, 21 + bob), (cx + 1, 16 + bob)])
-		part(im, sh, T["l"])
-		fill(im, {(x, y) for x, y in sh if x > cx + 5}, T["m"])
-		fill(im, rect(cx + 1, 8 + bob, cx + 9, 8 + bob), WHITE)
-		fill(im, {(cx + 5, 13 + bob), (cx + 6, 13 + bob), (cx + 5, 14 + bob), (cx + 6, 14 + bob)}, GOLD)
-	head = circ(cx + 1, 8 + bob, 4.6)
+		part(im, sh, STEEL_D)
+		inner = poly([(cx + 2, 10 + bob), (cx + 9, 10 + bob), (cx + 9, 15 + bob), (cx + 5.5, 19 + bob), (cx + 2, 15 + bob)])
+		fill(im, inner, T["m"])
+		fill(im, rect(cx + 2, 10 + bob, cx + 5, 12 + bob), T["l"])
+		part(im, {(cx + 5, 13 + bob), (cx + 6, 13 + bob), (cx + 5, 14 + bob), (cx + 6, 14 + bob), (cx + 5, 12 + bob)}, STEEL)
+		part(im, {(cx + 10, 8 + bob), (cx + 11, 7 + bob)}, STEEL)
+	head = circ(cx + 1, 8 + bob, 4.2)
 	part(im, head, SKIN)
 	ey = 8 + bob
-	fill(im, {(cx + 2, ey), (cx + 2, ey + 1), (cx + 5, ey), (cx + 5, ey + 1)}, OL)
 	cap = {(x, y) for x, y in head if y < 7 + bob}
 	if kind == "swordsman":
-		fill(im, cap, STEEL)
-		fill(im, {(x, y) for x, y in cap if y < 5 + bob and x < cx + 2}, WHITE)
-		fill(im, rect(cx - 4, 7 + bob, cx + 6, 7 + bob) & head, STEEL_D)
-		part(im, {(cx, 3 + bob), (cx + 1, 3 + bob), (cx + 2, 2 + bob), (cx - 1, 4 + bob)}, T["l"])
-	elif kind == "archer":
-		hood = cap | {(x, y) for x, y in head if x < cx - 1}
-		fill(im, hood, T["m"])
-		fill(im, {(x, y) for x, y in hood if y < 5 + bob}, T["l"])
-		fill(im, {(cx + 3, 3 + bob), (cx + 4, 2 + bob), (cx + 5, 1 + bob)}, LEAF)
+		fill(im, cap, STEEL_D)
+		fill(im, {(x, y) for x, y in cap if y < 5 + bob and x < cx + 2}, STEEL)
+		fill(im, rect(cx - 4, 7 + bob, cx + 6, 7 + bob) & head, OL)
+		part(im, {(cx + 1, 3 + bob), (cx + 1, 2 + bob), (cx, 1 + bob)}, T["m"])  # dikenli tepelik
+		part(im, {(cx - 3, 6 + bob), (cx - 4, 5 + bob)}, BONE)
+		unit_face(im, cx, ey)
+	elif kind == "archer":  # maskeli, kukuletalı (yüzün alt yarısı kapalı)
+		hood = cap | {(x, y) for x, y in head if x < cx - 1} | {(x, y) for x, y in head if y > ey + 1}
+		fill(im, hood, T["d"])
+		fill(im, {(x, y) for x, y in hood if y < 5 + bob}, T["m"])
+		unit_face(im, cx, ey, mouth=False)
+		fill(im, {(cx + 3, ey), (cx + 6, ey)}, GOLD)
 	elif kind == "shield":
 		fill(im, cap, STEEL_D)
 		fill(im, {(x, y) for x, y in cap if y < 5 + bob}, STEEL)
 		fill(im, rect(cx - 4, 7 + bob, cx + 6, 7 + bob) & head, OL)
-		fill(im, {(cx + 1, 3 + bob), (cx + 2, 3 + bob)}, T["l"])
+		part(im, line(cx - 3, 6 + bob, cx - 5, 2 + bob, 1), BONE)  # boynuzlar
+		part(im, line(cx + 5, 6 + bob, cx + 7, 2 + bob, 1), BONE)
+		unit_face(im, cx, ey)
 	elif kind == "healer":
-		hood = cap | {(x, y) for x, y in head if x < cx - 1}
-		fill(im, hood, WHITE)
-		fill(im, rect(cx - 4, 7 + bob, cx + 6, 7 + bob) & head, T["m"])
+		hood = cap | {(x, y) for x, y in head if x < cx - 1} | {(x, y) for x, y in head if y > ey + 2}
+		fill(im, hood, ROBE)
+		fill(im, {(x, y) for x, y in hood if y < 5 + bob}, T["d"])
+		fill(im, rect(cx - 4, 6 + bob, cx + 6, 6 + bob) & head, T["m"])
+		fill(im, {(x, y) for x, y in head if x > cx - 2 and 6 + bob < y <= ey + 2}, (30, 24, 44, 255))  # gölgeli yüz
+		fill(im, {(cx + 3, ey), (cx + 6, ey), (cx + 3, ey + 1), (cx + 6, ey + 1)}, T["l"])  # parlayan gözler
 	return im
 
 
@@ -379,33 +442,33 @@ def cannon_frame(team, anim, f):
 	T = TEAMS[team]
 	im = Img(US, US)
 	roll = 0 if anim == "idle" else f
-	shadow(im, 12, 21, 9, 2.2)
-	# namlu (sağa bakıyor)
-	bar = poly([(4, 10), (19, 8), (21, 11), (19, 14), (4, 15)])
-	part(im, bar, (62, 62, 78, 255))
-	fill(im, {(x, y) for x, y in bar if y < 11}, (110, 112, 132, 255))
-	part(im, rect(19, 8, 21, 14), (62, 62, 78, 255))
-	fill(im, {(21, 11), (20, 11)}, OL)
-	fill(im, rect(8, 9, 8, 14), GOLD_D)
-	# gövde (takım renginde)
-	cart = rect(5, 14, 17, 17)
+	shadow(im, 12, 21, 10, 2.2)
+	IRON, IRON_L = (44, 46, 62, 255), (112, 116, 138, 255)
+	bar = poly([(3, 7), (19, 5), (22, 8), (22, 13), (19, 15), (3, 16)])  # iri namlu
+	part(im, bar, IRON)
+	fill(im, {(x, y) for x, y in bar if y < 9}, IRON_L)
+	part(im, rect(19, 5, 22, 15), IRON)
+	fill(im, rect(21, 8, 22, 12), OL)
+	fill(im, rect(7, 6, 7, 15), GOLD_D)
+	fill(im, rect(12, 6, 12, 15), GOLD_D)
+	cart = rect(4, 15, 18, 18)
 	part(im, cart, T["m"])
-	fill(im, rect(5, 14, 17, 14), T["l"])
-	# tekerlek
-	wr = 4.4
-	part(im, circ(10, 18, wr), WOOD)
-	fill(im, circ(10, 18, 2), WOOD_D)
-	fill(im, {(10, 18)}, GOLD)
+	fill(im, rect(4, 15, 18, 15), T["l"])
+	fill(im, rect(4, 18, 18, 18), T["d"])
+	part(im, circ(10, 18.5, 5), WOOD_D)
+	fill(im, circ(10, 18.5, 3), WOOD)
+	fill(im, {(10, 18), (11, 18), (10, 19), (11, 19)}, STEEL)
 	a0 = roll * 0.8
 	for k in range(4):
 		a = a0 + k * math.pi / 2
-		fill(im, {(int(round(10 + math.cos(a) * 3.6)), int(round(18 + math.sin(a) * 3.6)))}, WOOD_D)
-	# topçu (arkada)
-	head = circ(4, 8, 3.2)
+		fill(im, {(int(round(10 + math.cos(a) * 3.8)), int(round(18 + math.sin(a) * 3.8)))}, OL)
+	head = circ(4, 9, 3.4)  # topçu: miğferli, kızgın
 	part(im, head, SKIN)
-	fill(im, {(x, y) for x, y in head if y < 7}, T["d"])
-	fill(im, {(5, 8), (6, 8)}, OL)
-	part(im, rect(2, 11, 5, 14), T["m"])
+	fill(im, {(x, y) for x, y in head if y < 8}, STEEL_D)
+	fill(im, {(5, 9), (6, 9)}, OL)
+	fill(im, {(4, 7), (5, 8)}, OL)
+	part(im, {(3, 5), (3, 4)}, BONE)
+	part(im, rect(1, 12, 5, 15), T["m"])
 	return im
 
 
@@ -425,7 +488,7 @@ def strip(frames):
 def grass_tile(seed):
 	r = random.Random(seed)
 	im = Img(16, 16)
-	base, dk, lt = (94, 170, 76, 255), (78, 148, 66, 255), (124, 196, 92, 255)
+	base, dk, lt = (72, 130, 66, 255), (58, 110, 56, 255), (92, 150, 76, 255)
 	for y in range(16):
 		for x in range(16):
 			im.set(x, y, base)
@@ -442,7 +505,7 @@ def grass_tile(seed):
 def dirt_tile(seed):
 	r = random.Random(seed)
 	im = Img(16, 16)
-	base, dk, lt = (190, 150, 100, 255), (160, 120, 80, 255), (214, 178, 126, 255)
+	base, dk, lt = (158, 122, 84, 255), (132, 98, 68, 255), (182, 146, 104, 255)
 	for y in range(16):
 		for x in range(16):
 			im.set(x, y, base)
@@ -456,35 +519,24 @@ def dirt_tile(seed):
 
 
 def stone_tile(seed):
-	"""Tuğla/taş engel döşemesi (yinelenebilir, belirgin gri-mavi)."""
+	"""Taş engel döşemesi: büyük koyu bloklar (az harç çizgisi), yinelenebilir."""
 	r = random.Random(seed)
 	im = Img(16, 16)
-	face, lt, dk, mortar = (128, 138, 160, 255), (166, 176, 196, 255), (92, 100, 126, 255), (58, 62, 84, 255)
+	face, lt, dk, mortar = (100, 106, 126, 255), (128, 134, 154, 255), (74, 80, 102, 255), (44, 46, 62, 255)
 	for y in range(16):
 		for x in range(16):
 			im.set(x, y, face)
-	for y in (0, 8):  # yatay harç
-		for x in range(16):
-			im.set(x, y + 7 if y == 0 else y + 7, mortar)
 	for x in range(16):
-		im.set(x, 7, mortar)
 		im.set(x, 15, mortar)
-	for x in (3, 11):  # düşey harç (sıralı kayık)
-		for y in range(0, 7):
-			im.set(x, y, mortar)
-	for x in (7, 15):
-		for y in range(8, 15):
-			im.set(x, y, mortar)
-	for y0 in (0, 8):  # tuğla üstü açık, altı koyu
-		for x in range(16):
-			if im.get(x, y0) == face:
-				im.set(x, y0, lt)
-			if im.get(x, y0 + 6) == face:
-				im.set(x, y0 + 6, dk)
-	for _ in range(6):
-		x, y = r.randrange(16), r.randrange(16)
-		if im.get(x, y) == face:
-			im.set(x, y, dk if r.random() < 0.5 else lt)
+		im.set(x, 0, lt)
+		im.set(x, 14, dk)
+	for y in range(15):
+		im.set(15, y, mortar)
+	for y in range(1, 6):
+		im.set(7 + seed % 2 * 2, y, dk)
+	for _ in range(14):
+		x, y = r.randrange(15), r.randrange(1, 14)
+		im.set(x, y, dk if r.random() < 0.6 else lt)
 	return im
 
 
@@ -516,7 +568,7 @@ def decor_strip():
 def castle(team):
 	T = TEAMS[team]
 	im = Img(64, 64)
-	stone, stl, std = (150, 158, 180, 255), (184, 192, 210, 255), (104, 112, 140, 255)
+	stone, stl, std = (84, 88, 106, 255), (116, 122, 144, 255), (56, 60, 78, 255)
 	shadow(im, 32, 59, 29, 4)
 	def tower(x0, y0, x1):
 		body = rect(x0, y0, x1, 58)
@@ -557,6 +609,12 @@ def castle(team):
 	for x in (29, 32, 35):
 		fill(im, line(x, 45, x, 57, 1), WOOD_D)
 	fill(im, {(36, 52), (36, 53)}, GOLD)
+	for tx in (21, 43):  # meşaleler
+		fill(im, line(tx, 44, tx, 50, 1), WOOD_D)
+		part(im, {(tx, 42), (tx - 1, 43), (tx + 1, 43), (tx, 43), (tx, 41)}, (255, 150, 40, 255))
+		fill(im, {(tx, 43), (tx, 42)}, (255, 226, 110, 255))
+	for gx in (28, 36):  # kapı üstü dikenler
+		fill(im, {(gx, 41), (gx, 40)}, STEEL)
 	# takım flaması
 	fill(im, rect(30, 36, 34, 40), T["m"])
 	fill(im, poly([(30, 40), (34, 40), (32, 44)]), T["m"])
