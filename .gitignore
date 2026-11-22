@@ -4,6 +4,10 @@
 export_presets.cfg
 .import/
 
+# Python derleme çıktısı
+__pycache__/
+*.pyc
+
 # Geçici / editör
 *.tmp
 *.log

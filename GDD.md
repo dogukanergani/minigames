@@ -190,10 +190,11 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 ## 9. Görsel ve ses ✅
 
 - **Pixel art**, mantık dünyası **640x360** birim, pencere **1920x1080** (`canvas_items` ölçekleme, nearest filtre). Sprite'lar 1080p'de birebir piksel boyutunda görünür.
-- ✅ **Sprite paketi: Tiny Swords (Free Pack), Pixel Frog.** Savaşta çimen zemin, takım renkli kale (üs), animasyonlu Savaşçı / Okçu / Mızrakçı / Pawn birimleri ve kahramanlar kullanılıyor. Kahramanın görünümü silahına göre değişir: **yay = Okçu, mızrak = Mızrakçı, diğerleri = Savaşçı**. Kahramanlar birimlerin 2 katı boyutta (1/3 ölçek), birimler yarı boyutta (1/6).
-- ⚠️ **Lisans:** Kullanım serbest (ticari dahil) ama dosyaların **yeniden dağıtımı yasak**. Bu yüzden sprite'lar `assets/tinyswords/` altında durur ve **GitHub'a konmaz** (`.gitignore`). Dosya yoksa oyun **kutu çizimine** döner. Kurulum: `assets/README.md`. Oyunun derlenmiş sürümünü paylaşmadan önce paketin şartları tekrar okunmalı.
-- Sprite eşlemesi: Kılıççı = Warrior, Okçu = Archer, Kalkancı = Lancer, Topçu = Pawn, Şifacı (ileride) = Monk. Takım rengi: Mavi / Kırmızı klasörleri.
-- 🧪 Henüz sprite olmayanlar: menü/market/minigame ekranları (hâlâ düz çizim ve yazı), ok ve mermi, duvar/engel, yetenek efektleri, ses.
+- ✅ **Sprite paketi sırası:** `assets/custom/` (**özgün, repoda**) → `assets/tinyswords/` (Pixel Frog, repoda YOK) → kutu çizimi. Test için `-- pack=none|custom|tinyswords` argümanı.
+- ✅ **Özgün paket (`assets/custom/`, `tools/make_sprites.py` kodla üretir):** Sert/agresif tarz: çatık kaşlı yüzler, boynuzlu ve kanatlı miğferler, omuz zırhı, koyu doygun palet. Kahramanlar 32x32 (Savaşçı, Okçu, Mızrakçı: bekleme 2, koşu 4, saldırı 3 kare), birimler 24x24 (Kılıççı, Okçu, Kalkancı, Topçu, Şifacı: bekleme 2, koşu 4 kare), Mavi/Kırmızı varyantlı. Zemin: çimen, toprak yol, taş engel, çarpışmasız süsler (mantar, çiçek). Takım renkli kale ve dalgalanan bayrak, ok, top mermisi, patlama, tahta/taş duvar, coin. Sprite ölçeği 2/3 birim/piksel (1080p'de tam 2 ekran pikseli). Önizleme sayfaları: `assets/custom/preview_*.png`.
+- Kahramanın görünümü silahına göre değişir: **yay = Okçu, mızrak = Mızrakçı, diğerleri = Savaşçı**. Kahramanlar birimlerden belirgin büyük.
+- ⚠️ Tiny Swords yedek paketinin lisansı kullanımı serbest bırakır ama **yeniden dağıtımı yasaklar**: dosyaları `assets/tinyswords/` altında, `.gitignore`'da tutulur (`assets/README.md`). Oyunun derlenmiş sürümünü paylaşmadan önce o paketin şartları tekrar okunmalı. Özgün paket için böyle bir kısıt yok.
+- 🧪 Açık: okun yönü (mermi paketinde yön yok, ok yalnızca sağa/sola bakıyor), kahramanı kalabalıkta daha belirgin kılmak (halka/taç), Şifacı'nın oyuna girmesi (sprite hazır), menü/market/minigame ekranlarının görsel tasarımı, yetenek efektleri, ses.
 - Ton: ❓ (şu an çizgi film / şirin yönünde)
 - Ses: ❓ henüz yok.
 
