@@ -11,3 +11,6 @@ export_presets.cfg
 .idea/
 .claude/settings.local.json
 .claude/worktrees/
+
+# Sprite paketleri: lisansları yeniden dağıtımı yasaklıyor, GitHub'a konmaz (bkz. assets/README.md)
+assets/tinyswords/

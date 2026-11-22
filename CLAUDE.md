@@ -53,7 +53,10 @@ $g = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Micros
   İstemci verisine güvenme: sunucu her istekte doğrular.
 - Çok oyunculu durum RPC ile herkese yansır; coin/envanter her istemcide aynı olaylardan deterministik üretilir.
 - Çizim koda gömülüdür (`_draw`); harici görsel eklemeden önce yöneticiye sor (Sanat rolü hariç).
-- Pixel art: iç çözünürlük 640x360, nearest filtre, tamsayı ölçek. Yazı boyutları küçük tutulur.
+- **Sprite'lar GitHub'da YOK** (Tiny Swords lisansı yeniden dağıtımı yasaklar): `assets/tinyswords/` `.gitignore`'dadır, kurulum `assets/README.md`'de.
+  Sprite'ları `Art` autoload'ı çalışma anında diskten yükler. **Her sprite çizimi bir yedekle (kutu çizimi) birlikte yazılmalı**
+  (`Art.available` / `null` doku kontrolü). Testler sprite gerektirmez. Sprite dosyalarını asla commit etme.
+- Pixel art: mantık dünyası 640x360 birim, pencere 1920x1080 (`canvas_items`, x3). Sprite ölçeği = 1/3 (kahraman, 1080p'de birebir) ya da 1/6 (birimler). Yazı boyutları küçük tutulur.
 - Yorumlar ve oyuncuya görünen metinler Türkçe, kod/değişken adları İngilizce. Girinti: tab.
 
 ## Bu projede yaşanmış tuzaklar (tekrarlama)

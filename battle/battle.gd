@@ -15,8 +15,13 @@ const Items = preload("res://scripts/items.gd")
 
 const VIEW := Vector2(640, 360)
 const ARENA := Rect2(0, 0, 1280, 720)
-const PSIZE := 12.0  # kahraman
-const HALF := 6.0
+const PSIZE := 16.0  # kahraman çarpışma kutusu (sprite'a uysun diye büyütüldü)
+const HALF := 8.0
+## Sprite ölçekleri (dünya birimi / sprite pikseli). Pencere 1920x1080 = dünya x3, bu yüzden
+## kahraman 1/3 ile 1080p'de birebir piksel boyutunda görünür; birimler yarı boyutta (1/6).
+const SPR_HERO := 1.0 / 3.0
+const SPR_UNIT := 1.0 / 6.0
+const SPR_TILE := 1.0 / 3.0
 const USIZE := 6.0  # birim
 const UHALF := 3.0
 const BASE_SPEED := 80.0
@@ -126,6 +131,11 @@ var snap: Dictionary = {}
 var snap_u: Array = []  # birimler: [uid, x, y, hp, max_hp, takım, tür]
 var view_pos: Dictionary = {}
 var view_u: Dictionary = {}
+# Sprite animasyonu için hareket / bakış yönü (istemci, sadece çizim)
+var unit_move: Dictionary = {}  # uid -> hareket ediyor mu
+var unit_flip: Dictionary = {}  # uid -> sola mı bakıyor
+var hero_move: Dictionary = {}
+var atk_anim: Dictionary = {}  # peer_id -> saldırı animasyonunun başladığı an (ms)
 var feed: Array = []
 var send_acc := 0.0
 var my_id := 0
@@ -1338,18 +1348,24 @@ func _process(delta: float) -> void:
 	for id in snap.p.keys():
 		var a: Array = snap.p[id]
 		var target := Vector2(a[0], a[1])
+		var before: Vector2 = view_pos.get(id, target)
 		if id == my_id and pred_valid and not multiplayer.is_server():
 			view_pos[id] = pred_pos  # kendi kahramanım: tahmin edilen konum (gecikmesiz)
-			continue
-		if not view_pos.has(id) or view_pos[id].distance_to(target) > 60.0:
+		elif not view_pos.has(id) or view_pos[id].distance_to(target) > 60.0:
 			view_pos[id] = target
 		else:
 			view_pos[id] = view_pos[id].lerp(target, k)
+		hero_move[id] = before.distance_to(view_pos[id]) > 0.25
 	var new_u := {}
 	for a in snap_u:
 		var target := Vector2(a[1], a[2])
 		var old: Vector2 = view_u.get(a[0], target)
-		new_u[a[0]] = target if old.distance_to(target) > 40.0 else old.lerp(target, k)
+		var now_pos: Vector2 = target if old.distance_to(target) > 40.0 else old.lerp(target, k)
+		new_u[a[0]] = now_pos
+		var d := now_pos - old
+		unit_move[a[0]] = d.length() > 0.2
+		if absf(d.x) > 0.06:
+			unit_flip[a[0]] = d.x < 0.0
 	view_u = new_u
 	if snap.p.has(my_id) and not over:
 		camera.position = view_pos[my_id].round()
@@ -1374,12 +1390,27 @@ func _text(canvas: CanvasItem, pos: Vector2, text: String, size: int, color: Col
 
 
 func _draw() -> void:
-	draw_rect(ARENA, Color(0.16, 0.2, 0.16))
+	var grass: Texture2D = Art.grass() if Art.available else null
+	if grass != null:  # sprite'lı zemin: çimen döşemesi (dünya x3 ölçeğinde birebir piksel)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2(SPR_TILE, SPR_TILE))
+		draw_texture_rect(grass, Rect2(Vector2.ZERO, ARENA.size / SPR_TILE), true)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	else:
+		draw_rect(ARENA, Color(0.16, 0.2, 0.16))
 	for t in 2:
 		var bx := 0.0 if t == 0 else ARENA.size.x - BASE_W
 		draw_rect(Rect2(bx, 0.0, BASE_W, ARENA.size.y), _tint(TEAM_COLORS[t], 0.14))
+		var castle: Texture2D = Art.tex("buildings/%s_castle.png" % Art.TEAM_DIR[t]) if Art.available else null
+		if castle != null:  # üs: kale, bayrağın arkasında
+			var csize := Vector2(castle.get_width(), castle.get_height()) * SPR_TILE
+			draw_texture_rect(castle, Rect2(FLAG_HOME[t] - Vector2(csize.x * 0.5, csize.y * 0.72), csize), false)
 	for o in OBSTACLES:
-		draw_rect(o, Color(0.38, 0.38, 0.42))
+		if Art.available:
+			draw_rect(o, Color(0.33, 0.41, 0.42))
+			draw_rect(Rect2(o.position, Vector2(o.size.x, 3.0)), Color(0.5, 0.6, 0.58))
+			draw_rect(o, Color(0.12, 0.18, 0.2), false, 1.5)
+		else:
+			draw_rect(o, Color(0.38, 0.38, 0.42))
 	if snap.is_empty():
 		return
 
@@ -1394,27 +1425,40 @@ func _draw() -> void:
 		var fp := Vector2(f[0], f[1])
 		if f[2] == 0:
 			draw_arc(fp, 8.0, 0.0, TAU, 12, _tint(TEAM_COLORS[t], 0.5), 1.0)
-		draw_rect(Rect2(fp.x - 1.0, fp.y - 14.0, 2.0, 16.0), Color(0.9, 0.9, 0.9))
-		draw_rect(Rect2(fp.x + 1.0, fp.y - 14.0, 9.0, 7.0), TEAM_COLORS[t])
+		if Art.available:  # sprite'lı görünümde: tahta direk + üçgen flama (kalenin önünde okunur)
+			draw_rect(Rect2(fp.x - 1.5, fp.y - 24.0, 3.0, 26.0), Color(0.3, 0.2, 0.12))
+			var flag_pts := PackedVector2Array([Vector2(fp.x + 1.5, fp.y - 24.0), Vector2(fp.x + 17.0, fp.y - 18.0), Vector2(fp.x + 1.5, fp.y - 12.0)])
+			draw_colored_polygon(flag_pts, TEAM_COLORS[t])
+			flag_pts.append(flag_pts[0])
+			draw_polyline(flag_pts, Color(0.1, 0.08, 0.08), 1.0)
+		else:
+			draw_rect(Rect2(fp.x - 1.0, fp.y - 14.0, 2.0, 16.0), Color(0.9, 0.9, 0.9))
+			draw_rect(Rect2(fp.x + 1.0, fp.y - 14.0, 9.0, 7.0), TEAM_COLORS[t])
 
 	# Birimler (küçük, soluk)
-	for a in snap_u:
+	var ordered: Array = snap_u.duplicate()
+	ordered.sort_custom(func(p, q):  # derinlik: aşağıdaki birim yukarıdakinin üstüne çizilir
+		return view_u.get(p[0], Vector2(p[1], p[2])).y < view_u.get(q[0], Vector2(q[1], q[2])).y)
+	for a in ordered:
 		var upos: Vector2 = view_u.get(a[0], Vector2(a[1], a[2]))
 		var ucol: Color = TEAM_COLORS[a[5]].darkened(0.25)
 		var uh: float = UNIT_TYPES[UNIT_ORDER[a[6]]].half
 		var ur := Rect2(upos.x - uh, upos.y - uh, uh * 2.0, uh * 2.0)
-		draw_rect(ur, ucol)
-		match a[6]:
-			1:  # okçu: ortada açık nokta
-				draw_rect(Rect2(upos.x - 1.0, upos.y - 1.0, 2.0, 2.0), Color(1, 1, 1, 0.85))
-			2:  # topçu: büyük, ortasında koyu namlu + sarı uç
-				draw_rect(Rect2(upos.x - 1.0, upos.y - 5.0, 2.0, 6.0), Color(0.1, 0.1, 0.12))
-				draw_rect(Rect2(upos.x - 1.0, upos.y - 6.0, 2.0, 1.5), Color(1.0, 0.8, 0.3))
-			3:  # kalkancı: kalın beyaz çerçeve + ortada kalkan çizgisi
-				draw_rect(ur.grow(1.0), Color(0.92, 0.92, 0.95), false, 2.0)
-				draw_rect(Rect2(upos.x - 0.5, upos.y - 3.0, 1.0, 6.0), Color(0.92, 0.92, 0.95))
+		var sprite_drawn := Art.available and _draw_unit_sprite(a, upos)
+		if not sprite_drawn:
+			draw_rect(ur, ucol)
+			match a[6]:
+				1:  # okçu: ortada açık nokta
+					draw_rect(Rect2(upos.x - 1.0, upos.y - 1.0, 2.0, 2.0), Color(1, 1, 1, 0.85))
+				2:  # topçu: büyük, ortasında koyu namlu + sarı uç
+					draw_rect(Rect2(upos.x - 1.0, upos.y - 5.0, 2.0, 6.0), Color(0.1, 0.1, 0.12))
+					draw_rect(Rect2(upos.x - 1.0, upos.y - 6.0, 2.0, 1.5), Color(1.0, 0.8, 0.3))
+				3:  # kalkancı: kalın beyaz çerçeve + ortada kalkan çizgisi
+					draw_rect(ur.grow(1.0), Color(0.92, 0.92, 0.95), false, 2.0)
+					draw_rect(Rect2(upos.x - 0.5, upos.y - 3.0, 1.0, 6.0), Color(0.92, 0.92, 0.95))
 		if a[3] < a[4]:
-			draw_rect(Rect2(upos.x - uh, upos.y - uh - 3.0, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
+			var bar_y := upos.y - uh - 3.0 - (8.0 if sprite_drawn else 0.0)
+			draw_rect(Rect2(upos.x - uh, bar_y, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
 
 	for pr in snap.pr:
 		if pr[3]:  # top mermisi
@@ -1437,9 +1481,15 @@ func _draw() -> void:
 			draw_line(pos - Vector2(5, 5), pos + Vector2(5, 5), _tint(col, 0.5), 1.0)
 			draw_line(pos - Vector2(5, -5), pos + Vector2(5, -5), _tint(col, 0.5), 1.0)
 			continue
-		draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
-		var outline := Color.WHITE if id == my_id else Color(0.05, 0.05, 0.08)
-		draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
+		var top := 13.0  # can çubuğu ve isim için kahramanın üstündeki boşluk
+		if Art.available and _draw_hero_sprite(id, a, pos):
+			top = 27.0
+			if id == my_id:  # kendi kahramanımın altında beyaz halka
+				draw_arc(pos + Vector2(0, 4), 12.0, 0.0, TAU, 20, Color(1, 1, 1, 0.75), 1.0)
+		else:
+			draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
+			var outline := Color.WHITE if id == my_id else Color(0.05, 0.05, 0.08)
+			draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
 		if a[18]:  # Kalkan Patlaması koruması
 			draw_arc(pos, 11.0, 0.0, TAU, 20, Color(0.4, 0.8, 1.0, 0.9), 1.5)
 		if a[19]:  # Savaş Narası: birlik güçlü
@@ -1453,16 +1503,62 @@ func _draw() -> void:
 			var reach: float = WEAPONS[a[8]].range
 			if reach > 0.0:
 				draw_arc(pos, reach, aim_a - deg_to_rad(60.0), aim_a + deg_to_rad(60.0), 8, Color(1, 1, 1, 0.8), 1.0)
-		draw_rect(Rect2(pos.x - 8.0, pos.y - 13.0, 16.0, 2.0), Color(0.3, 0.05, 0.05))
-		draw_rect(Rect2(pos.x - 8.0, pos.y - 13.0, 16.0 * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
+		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0, 2.0), Color(0.3, 0.05, 0.05))
+		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0 * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
 		if a[6] >= 0:
-			draw_rect(Rect2(pos.x - 1.0, pos.y - 24.0, 8.0, 6.0), TEAM_COLORS[a[6]])
-		_text(self, pos + Vector2(-24, -16), _name_of(id), 8, _tint(Color.WHITE, 0.85), 48.0, HORIZONTAL_ALIGNMENT_CENTER)
+			draw_rect(Rect2(pos.x - 1.0, pos.y - top - 11.0, 8.0, 6.0), TEAM_COLORS[a[6]])
+		_text(self, pos + Vector2(-24, -top - 3.0), _name_of(id), 8, _tint(Color.WHITE, 0.85), 48.0, HORIZONTAL_ALIGNMENT_CENTER)
 
 	# Saldır komutundayken imleç işareti
 	if snap.p.has(my_id) and snap.p[my_id][12] == 1:
 		var c := get_global_mouse_position()
 		draw_arc(c, 6.0, 0.0, TAU, 10, Color(1, 1, 1, 0.6), 1.0)
+
+
+## Animasyon karesi: zamanla ilerler, `phase` birimlerin aynı anda adım atmasını bozar.
+func _anim_frame(t: Texture2D, step_ms: float, phase: int) -> int:
+	return (int(float(Time.get_ticks_msec()) / step_ms) + phase) % Art.frame_count(t)
+
+
+## Birimi sprite ile çizer (hareket ediyorsa koşu, değilse bekleme; yöne göre ayna). Dosya yoksa false.
+func _draw_unit_sprite(a: Array, upos: Vector2) -> bool:
+	var sprite: String = Art.UNIT_SPRITE.get(UNIT_ORDER[a[6]], "")
+	if sprite == "":
+		return false
+	var uid: int = a[0]
+	var t: Texture2D = Art.unit_tex(a[5], sprite, "run" if unit_move.get(uid, false) else "idle")
+	if t == null:
+		return false
+	var flip: bool = unit_flip.get(uid, a[5] == 1)  # Mavi sağa, Kırmızı sola bakarak başlar
+	Art.draw_frame(self, t, _anim_frame(t, 110.0, uid * 3), upos + Vector2(0, 2), SPR_UNIT, flip)
+	return true
+
+
+## Kahramanı sprite ile çizer. Silaha göre görünüm: yay = okçu, mızrak = mızrakçı, diğerleri = savaşçı.
+func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
+	var sprite: String = Art.WEAPON_SPRITE.get(a[8], "warrior")
+	var team: int = a[4]
+	var now := Time.get_ticks_msec()
+	if a[9] > 0.0 and now - int(atk_anim.get(id, -1000)) > 350:
+		atk_anim[id] = now  # yeni saldırı: animasyonu baştan oynat
+	var since: int = now - int(atk_anim.get(id, -1000))
+	var t: Texture2D = null
+	var frame := 0
+	if since < 300:
+		t = Art.unit_tex(team, sprite, Art.ATTACK_ANIM.get(sprite, "idle"))
+		if t != null:
+			frame = mini(Art.frame_count(t) - 1, int(float(since) / 300.0 * float(Art.frame_count(t))))
+	if t == null:
+		var moving: bool = hero_move.get(id, false)
+		t = Art.unit_tex(team, sprite, "run" if moving else "idle")
+		if t == null:
+			return false
+		frame = _anim_frame(t, 90.0 if moving else 130.0, 0)
+	var aim_a: float = a[7]
+	if id == my_id and not is_auto:
+		aim_a = (get_global_mouse_position() - pos).angle()
+	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), SPR_HERO, cos(aim_a) < 0.0)
+	return true
 
 
 func _draw_hud() -> void:
