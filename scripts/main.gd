@@ -3,7 +3,7 @@ extends Control
 ## Akış otomatik: sunucu süreleri sayar, geçişleri RPC ile herkese bildirir.
 ## Hiçbir oyuncunun "devam et" butonu yok.
 
-enum Phase { MINIGAME, RESULTS, SHOP, SHOP_DONE, BATTLE, BATTLE_DONE }
+enum Phase { MINIGAME, RESULTS, SHOP, SHOP_DONE, BATTLE, BATTLE_DONE, MATCH_DONE }
 
 const MINIGAMES := [
 	"res://minigames/reaction.tscn",
@@ -14,6 +14,11 @@ const SHOP_SCENE := "res://shop/shop.tscn"
 const BATTLE_SCENE := "res://battle/battle.tscn"
 const RESULTS_TIME := 6.0  # sonuç ekranı
 const SUMMARY_TIME := 5.0  # market özeti
+## Maç yapısı: ilk bu kadar SAVAŞ kazanan takım maçı kazanır (en fazla 2*N-1 tur).
+## Eşyalar kalıcı olduğu için kısa maç tercih edildi (uzun maçta öndeki hep öne geçer).
+## Test için `towin=N` argümanıyla değiştirilebilir.
+const ROUNDS_TO_WIN := 2
+const MATCH_END_TIME := 12.0  # maç sonu ekranı, sonra oda lobisine dönülür
 
 var phase: Phase = Phase.MINIGAME
 var ready_peers: Dictionary = {}
@@ -26,6 +31,9 @@ var countdown_label: Label
 var countdown_text := ""
 var countdown_left := 0.0
 var auto_test := "auto" in OS.get_cmdline_user_args()
+var full_match := "fullmatch" in OS.get_cmdline_user_args()  # test: ilk savaştan sonra çıkma, maç sonuna kadar oyna
+var rounds_to_win := ROUNDS_TO_WIN
+var round_wins: Array = [0, 0]  # takım başına kazanılan savaş sayısı (her istemcide aynı olaylardan türetilir)
 
 
 func _ready() -> void:
@@ -33,6 +41,9 @@ func _ready() -> void:
 	ui_theme.default_font_size = 12
 	theme = ui_theme
 	Game.reset()
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("towin="):
+			rounds_to_win = maxi(1, int(a.get_slice("=", 1)))
 	Net.lost_connection.connect(_on_lost_connection)
 	# Herkes sahneyi yükleyince sunucu ilk turu başlatır.
 	if multiplayer.is_server():
@@ -67,8 +78,9 @@ func _on_roster_changed() -> void:
 func _end_match(reason: String) -> void:
 	if auto_test:
 		print("[main ", multiplayer.get_unique_id(), "] MAÇ BİTTİ: ", reason)
-		get_tree().quit(0)
-		return
+		if not "keeplobby" in OS.get_cmdline_user_args():  # keeplobby: lobiye dönüşü gözle görmek için çıkma
+			get_tree().quit(0)
+			return
 	Net.in_game = false
 	Net.last_notice = reason
 	if multiplayer.is_server():
@@ -198,6 +210,7 @@ func _on_minigame_finished(ranking: Array, labels: Dictionary) -> void:
 			"> " if id == my_id else "  ", i + 1, _name_of(id), labels.get(id, ""),
 			Game.coins_for_rank(i), Game.coins.get(id, 0)])
 	var wait := 1.0 if auto_test else RESULTS_TIME
+	lines.push_front(_score_line())
 	_show_overlay("TUR %d SONUÇLARI" % Game.round_no, lines, "Market", wait)
 	_after(wait, Phase.RESULTS, _go_shop)
 	if auto_test:
@@ -212,6 +225,7 @@ func _on_shop_finished() -> void:
 		lines.append("%s%s: %s   (kalan %d coin)" % [
 			"> " if id == my_id else "  ", _name_of(id), Game.inventory_text(id), Game.coins.get(id, 0)])
 	var wait := 1.0 if auto_test else SUMMARY_TIME
+	lines.push_front(_score_line())
 	_show_overlay("MARKET BİTTİ", lines, "Savaş", wait)
 	_after(wait, Phase.SHOP_DONE, _go_battle)
 	if auto_test:
@@ -219,21 +233,46 @@ func _on_shop_finished() -> void:
 
 
 func _on_battle_finished(winner: int, scores: Array) -> void:
-	phase = Phase.BATTLE_DONE
+	round_wins[winner] += 1
+	var match_over: bool = round_wins[winner] >= rounds_to_win
+	phase = Phase.MATCH_DONE if match_over else Phase.BATTLE_DONE
 	var lines: Array = [
-		"Kazanan: %s Takım" % Net.TEAM_NAMES[winner],
-		"Skor: %s %d - %d %s" % [Net.TEAM_NAMES[0], scores[0], scores[1], Net.TEAM_NAMES[1]],
-		"Senin takımın: %s" % Net.TEAM_NAMES[Net.my_team()],
+		_score_line(),
+		"Savaşı %s Takım kazandı (bayrak %d - %d). Senin takımın: %s" % [
+			Net.TEAM_NAMES[winner], scores[0], scores[1], Net.TEAM_NAMES[Net.my_team()]],
 		"Kalan birimler (ölenler kalıcı gitti):",
 	]
 	for id in Game.last_ranking:
 		lines.append("  %s: %d birim" % [_name_of(id), Game.unit_count(id)])
-	_show_overlay("SAVAŞ BİTTİ", lines, "Yeni tur", 1.0 if auto_test else RESULTS_TIME)
-	_after(RESULTS_TIME, Phase.BATTLE_DONE, _next_round)  # TODO: maç yapısı (kaç döngü) kararlaşınca burası değişir
+	var in_test := auto_test and not full_match  # test: ilk savaştan sonra çık
+	if match_over:
+		var end_wait := 1.0 if auto_test else MATCH_END_TIME
+		lines.push_front("*** MAÇI %s TAKIM KAZANDI ***" % Net.TEAM_NAMES[winner].to_upper())
+		_show_overlay("MAÇ BİTTİ", lines, "Lobiye dönüş", end_wait)
+		_after(end_wait, Phase.MATCH_DONE, _finish_match.bind(winner))
+	else:
+		var next_wait := 1.0 if auto_test else RESULTS_TIME
+		_show_overlay("SAVAŞ BİTTİ", lines, "Sonraki tur", next_wait)
+		_after(next_wait, Phase.BATTLE_DONE, _next_round)
 	if auto_test:
 		print("[main ", multiplayer.get_unique_id(), "] SAVAŞ BİTTİ: kazanan=", Net.TEAM_NAMES[winner], " skor=", scores)
+	if in_test:
 		await get_tree().create_timer(0.5).timeout
 		get_tree().quit(0)
+
+
+## Sunucu: maç sonu ekranı bitti, herkesi aynı odanın lobisine döndür (bağlantı sürer).
+func _finish_match(winner: int) -> void:
+	if not multiplayer.is_server() or match_ended:
+		return
+	match_ended = true
+	_end_match.rpc("Maç bitti: %s Takım kazandı (%d - %d)." % [
+		Net.TEAM_NAMES[winner], round_wins[0], round_wins[1]])
+
+
+func _score_line() -> String:
+	return "Maç: %s %d - %d %s   (ilk %d savaşı kazanan)" % [
+		Net.TEAM_NAMES[0], round_wins[0], round_wins[1], Net.TEAM_NAMES[1], rounds_to_win]
 
 
 # --- Ortak ekran ---
@@ -262,7 +301,7 @@ func _show_overlay(title: String, lines: Array, next_text: String, seconds: floa
 	overlay.add_child(margin)
 
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
+	box.add_theme_constant_override("separation", 2)  # 5v5'te 18+ satır ekrana sığsın
 	margin.add_child(box)
 
 	var title_label := Label.new()

@@ -32,7 +32,9 @@ Lobi → [Minigame → Sonuç/coin → Market → Savaş] → ... tekrar
 
 ✅ **Akış otomatiktir, hiçbir oyuncu yönetmez.** Lobide herkes "Hazır" der (host hariç, host başlatır). Sonrasında sonuç ekranı (6 sn) ve market özeti (5 sn) süreli, sunucu geçişleri kendiliğinden yapar. Host'un "devam et" butonu yoktur.
 
-❓ Bir "maç" kaç döngü sürer? (örn. 3 tur, ya da bir takım X bayrak alana kadar)
+✅ **Maç yapısı (🧪 sayılar oynayarak ayarlanır):** Maç, "minigame → market → savaş" turlarından oluşur. **İlk 2 savaşı kazanan takım maçı kazanır** (en fazla 3 tur, `ROUNDS_TO_WIN`). Eşyalar kalıcı olduğu için kısa maç seçildi (uzun maçta öndeki hep öne geçer). Maç boyunca coin, envanter ve birimler turlar arasında kalır. Maç sonu ekranı 12 sn gösterilir, sonra herkes aynı odanın lobisine döner (hazır durumları sıfırlanır, host yeni maç başlatabilir). Yeni maçta coin ve envanter sıfırlanır.
+- Her sonuç ekranında "Maç: Mavi 1 - 0 Kırmızı" skoru görünür.
+- ❓ Maç sonunda oyuncu istatistikleri (en çok öldüren, en çok coin vb.) gösterilsin mi?
 
 ## 4. Oyuncular ve ağ ✅
 
@@ -183,7 +185,7 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - **Ağ testi:** `tests/netsim.py` ile aynı bilgisayarda yapay gecikme/kayıp. Ping ~120-500 ms ve %3-15 kayıpta tam tur bitiyor. Gerçek internet (farklı ağlar) henüz denenmedi.
 - ✅ **Oyuncu ayrılması:** İstemci ayrılırsa kalan oyuncular devam eder; bir takım tamamen boşalırsa maç biter ve herkes aynı odanın lobisine döner. Host kapanırsa istemciler lobiye döner (sebep gösterilir). Refleks sonucu sunucuda sınırlanır, altın bayrak 120 sn ile sınırlı.
 - Bilinen teknik borç: istemci hile koruması sınırlı (istek hızı sınırı yok, "0 ms" yollayan bot ayırt edilemez), bağlantıda sürüm/checksum denetimi yok, bağlantı kurma çok kötü ağda (%15 kayıp) arada başarısız olabiliyor, ayrı sunucu modu yok, internetten oynamak için port yönlendirme/relay gerekli. Ayrıntı: `tests/BULGULAR.md`.
-- **Açık karar:** Maçın kaç döngü süreceği. Şu an tur döngüsü sonsuz, takım boşalana kadar sürer.
+- Test: `tests/leave_sweep.ps1` tam maçı da (2 tur + lobiye dönüş) çalıştırır. El ile lobiye dönüşü görmek için testlere `keeplobby` argümanı verilir.
 
 ## 11. Yol haritası
 

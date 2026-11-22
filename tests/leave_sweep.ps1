@@ -56,6 +56,28 @@ $res = Get-Content "$out\h.txt" -Encoding UTF8 | Select-String "SONUÇ" | Select
 if ($res -and $res.Line -match "erken bastı") { Write-Host ("GEÇTİ   hilekâr istemci 'erken bastı' sayıldı: " + $res.Line.Trim()) -ForegroundColor Green }
 else { $failed++; Write-Host "KALDI   hilekâr istemci erken basış sayılmadı: $($res.Line)" -ForegroundColor Red }
 
+Write-Host "--- Tam maç (ilk 2 savaşı kazanan, 2 tur) ve lobiye dönüş"
+$h = Start-Process $g -ArgumentList @("--headless", "--path", $root, "res://scenes/net_test.tscn", "--", "host", "players=2", "auto", "fast", "fullmatch", "timeout=30") -PassThru -WindowStyle Hidden -RedirectStandardOutput "$out\h.txt" -RedirectStandardError "$out\h.err"
+Start-Sleep -Seconds 2
+$c = Start-Process $g -ArgumentList @("--headless", "--path", $root, "res://scenes/net_test.tscn", "--", "join", "idx=1", "auto", "fast", "fullmatch", "timeout=30") -PassThru -WindowStyle Hidden -RedirectStandardOutput "$out\c.txt" -RedirectStandardError "$out\c.err"
+$t0 = Get-Date
+$h.WaitForExit(240000) | Out-Null; $c.WaitForExit(20000) | Out-Null
+$sec = [int]((Get-Date) - $t0).TotalSeconds
+$hung = (-not $h.HasExited) -or (-not $c.HasExited)
+foreach ($x in $h, $c) { if (-not $x.HasExited) { $x.Kill() } }
+$hostOut = @(Get-Content "$out\h.txt" -Encoding UTF8)
+$battles = @($hostOut | Where-Object { $_ -match "SAVAŞ BİTTİ: kazanan=" }).Count
+$matchEnd = $hostOut | Where-Object { $_ -match "MAÇ BİTTİ: Maç bitti" } | Select-Object -First 1
+$cliEnd = Get-Content "$out\c.txt" -Encoding UTF8 | Where-Object { $_ -match "MAÇ BİTTİ: Maç bitti" } | Select-Object -First 1
+$errs = @(Get-Content "$out\h.err", "$out\c.err" -ErrorAction SilentlyContinue | Where-Object { $_ -match "SCRIPT ERROR" }).Count
+if ((-not $hung) -and $battles -eq 2 -and $matchEnd -and $cliEnd -and $errs -eq 0) {
+	Write-Host ("GEÇTİ   tam maç: {0} savaş, {1} sn, {2}" -f $battles, $sec, $matchEnd.Trim()) -ForegroundColor Green
+}
+else {
+	$failed++
+	Write-Host ("KALDI   tam maç: kilitlendi={0} savaş-sayısı={1} (beklenen 2) host-maç-sonu={2} istemci-maç-sonu={3} script-hatası={4}" -f $hung, $battles, [bool]$matchEnd, [bool]$cliEnd, $errs) -ForegroundColor Red
+}
+
 Write-Host ""
 if ($failed -eq 0) { Write-Host "Toplam: hepsi geçti. Çıktılar: $out" -ForegroundColor Green; exit 0 }
 Write-Host "Toplam: $failed kaldı. Çıktılar: $out" -ForegroundColor Red; exit 1
