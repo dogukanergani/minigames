@@ -12,6 +12,7 @@ extends Node2D
 signal finished(winner_team: int, scores: Array)
 
 const Items = preload("res://scripts/items.gd")
+const UiTheme = preload("res://scripts/ui_theme.gd")
 
 const VIEW := Vector2(640, 360)
 const ARENA := Rect2(0, 0, 1280, 720)
@@ -1576,52 +1577,147 @@ func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
 	return true
 
 
+## HUD yazısı: okunurluk için 1 piksel koyu gölge.
+func _hud_text(pos: Vector2, text: String, size: int, color: Color, width := -1.0, align := HORIZONTAL_ALIGNMENT_LEFT) -> void:
+	_text(hud, pos + Vector2(1, 1), text, size, Color(0.04, 0.03, 0.08, color.a), width, align)
+	_text(hud, pos, text, size, color, width, align)
+
+
+func _text_w(text: String, size: int) -> float:
+	return ThemeDB.fallback_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+
+
 func _draw_hud() -> void:
+	if over:
+		return  # sonuç ekranı HUD'un üstüne gelir, altta HUD görünmesin
 	if snap.is_empty():
-		_text(hud, Vector2(0, 180), "Savaş yükleniyor...", 14, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
+		_hud_text(Vector2(0, 180), "Savaş yükleniyor...", 14, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 		return
-	hud.draw_rect(Rect2(0, 0, VIEW.x, 16), Color(0, 0, 0, 0.45))
-	var secs := ceili(snap.t)
-	var clock := "ALTIN BAYRAK" if snap.sd else "%d:%02d" % [secs / 60, secs % 60]
-	_text(hud, Vector2(0, 12), "%s %d  -  %d %s     %s" % [Net.TEAM_NAMES[0], snap.s[0], snap.s[1], Net.TEAM_NAMES[1], clock],
-		11, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_scorebar()
 	if snap.cd > 0.0:
-		_text(hud, Vector2(0, 150), "HAZIRLAN: %d" % ceili(snap.cd), 20, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
-		_text(hud, Vector2(0, 172), "WASD hareket · sol tık saldırı · Q silah · E duvar", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
-		_text(hud, Vector2(0, 186), "1 Takip · 2 Saldır (imlece) · 3 Bayrak  (birliğin için)", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
-		_text(hud, Vector2(0, 200), "Boşluk / F: yeteneklerin (markette aldıysan)", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
+		var bx := Rect2(130, 126, 380, 92)
+		hud.draw_style_box(UiTheme.panel_box(), bx)
+		_hud_text(Vector2(130, 154), "HAZIRLAN: %d" % ceili(snap.cd), 20, UiTheme.GOLD_L, 380.0, HORIZONTAL_ALIGNMENT_CENTER)
+		var tips := ["WASD hareket · sol tık saldırı · Q silah · E duvar",
+			"1 Takip · 2 Saldır (imlece) · 3 Bayrak  (birliğin için)",
+			"Boşluk / F: yeteneklerin (markette aldıysan)"]
+		for i in tips.size():
+			_hud_text(Vector2(130, 176 + i * 14), tips[i], 10, Color(1, 1, 1, 0.9), 380.0, HORIZONTAL_ALIGNMENT_CENTER)
 	if snap.p.has(my_id):
 		var me: Array = snap.p[my_id]
-		hud.draw_rect(Rect2(0, 340, 400, 20), Color(0, 0, 0, 0.45))
-		_text(hud, Vector2(6, 354), "%s   Can %d/%d   Duvar: %d   Birlik: %d (%s)" % [
-			WEAPONS[me[8]].name, ceili(me[2]), me[3], me[11], me[13], CMD_NAMES[me[12]]], 10, Color.WHITE)
-		var parts: Array = []
-		var key_names := ["Boşluk", "F"]
-		for s in 2:
-			var ai: int = me[14 + s]
-			if ai > 0:
-				var cd_left: int = me[16 + s]
-				parts.append("[%s] %s %s" % [key_names[s], ABILITIES[ABILITY_ORDER[ai - 1]].name,
-					"HAZIR" if cd_left <= 0 else "%d sn" % cd_left])
-		if not parts.is_empty():
-			hud.draw_rect(Rect2(0, 322, 400, 16), Color(0, 0, 0, 0.45))
-			_text(hud, Vector2(6, 334), "   ".join(parts), 10, Color(1.0, 0.95, 0.6))
+		_draw_player_bar(me)
 		if not me[5]:
-			_text(hud, Vector2(0, 170), "Yeniden doğuyorsun: %d" % ceili(me[10]), 14, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
-	var y := 28.0
-	for e in feed:
-		_text(hud, Vector2(0, y), e[0], 10, Color(1, 1, 1, clampf(e[1], 0.0, 1.0)), 634.0, HORIZONTAL_ALIGNMENT_RIGHT)
-		y += 11.0
+			hud.draw_style_box(UiTheme.panel_box(), Rect2(220, 156, 200, 34))
+			_hud_text(Vector2(220, 178), "Yeniden doğuyorsun: %d" % ceili(me[10]), 14, Color.WHITE, 200.0, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_feed()
 	_draw_minimap()
+
+
+## Üst bant: [Mavi skor] [süre] [Kırmızı skor], takım renkli, ortada metal saat kutusu.
+func _draw_scorebar() -> void:
+	var secs := ceili(snap.t)
+	var clock := "ALTIN BAYRAK" if snap.sd else "%d:%02d" % [secs / 60, secs % 60]
+	hud.draw_style_box(UiTheme.banner_box("banner_blue"), Rect2(150, 1, 150, 20))
+	hud.draw_style_box(UiTheme.banner_box("banner_red"), Rect2(340, 1, 150, 20))
+	hud.draw_style_box(UiTheme.banner_box("banner_steel"), Rect2(284, 0, 72, 22))
+	_hud_text(Vector2(156, 16), Net.TEAM_NAMES[0].to_upper(), 10, Color(1, 1, 1, 0.9))
+	_hud_text(Vector2(150, 17), str(snap.s[0]), 16, Color.WHITE, 142.0, HORIZONTAL_ALIGNMENT_RIGHT)
+	_hud_text(Vector2(484, 16), Net.TEAM_NAMES[1].to_upper(), 10, Color(1, 1, 1, 0.9), -1.0)
+	_hud_text(Vector2(346, 17), str(snap.s[1]), 16, Color.WHITE, 142.0, HORIZONTAL_ALIGNMENT_LEFT)
+	_hud_text(Vector2(284, 16), clock, 12 if snap.sd else 13, UiTheme.GOLD_L if snap.sd else Color.WHITE, 72.0, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+## Alt panel: can çubuğu, silah, yetenekler (bekleme = karartma), duvar, birlik + birlik komutu göstergesi.
+func _draw_player_bar(me: Array) -> void:
+	# Birlik komutu: 1 / 2 / 3, aktif olan altın çerçeveli
+	for c in 3:
+		var r := Rect2(6 + c * 56, 290, 54, 20)
+		hud.draw_style_box(UiTheme.slot_box(me[12] == c), r)
+		_hud_text(r.position + Vector2(5, 14), str(c + 1), 11, UiTheme.GOLD_L if me[12] == c else UiTheme.DIM)
+		_hud_text(r.position + Vector2(14, 14), CMD_NAMES[c], 10, Color.WHITE if me[12] == c else UiTheme.DIM)
+	hud.draw_style_box(UiTheme.panel_box(), Rect2(4, 314, 346, 44))
+	# Can
+	var hp: float = clampf(me[2] / me[3], 0.0, 1.0)
+	UiTheme.draw_icon(hud, "heart", Vector2(11, 335), 14.0)
+	var bar := Rect2(28, 337, 92, 10)
+	hud.draw_rect(bar.grow(1.0), Color(0.05, 0.04, 0.09))
+	hud.draw_rect(bar, Color(0.28, 0.06, 0.08))
+	hud.draw_rect(Rect2(bar.position, Vector2(bar.size.x * hp, bar.size.y)), Color(0.3, 0.85, 0.3).lerp(Color(0.9, 0.2, 0.2), 1.0 - hp))
+	hud.draw_rect(Rect2(bar.position, Vector2(bar.size.x * hp, 2.0)), Color(1, 1, 1, 0.25))
+	_hud_text(bar.position + Vector2(0, 9), "%d/%d" % [ceili(me[2]), me[3]], 9, Color.WHITE, bar.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	# Silah
+	_draw_slot(Rect2(128, 329, 26, 26), me[8], false, WEAPONS[me[8]].name, 0.0, 0)
+	# Yetenekler: Boşluk, F
+	var key_names := ["Boşluk", "F"]
+	for s in 2:
+		var ai: int = me[14 + s]
+		var r := Rect2(162 + s * 32, 329, 26, 26)
+		if ai > 0:
+			var aid: String = ABILITY_ORDER[ai - 1]
+			var cd_left: int = me[16 + s]
+			_draw_slot(r, aid, cd_left <= 0, key_names[s], clampf(cd_left / float(ABILITIES[aid].cd), 0.0, 1.0), cd_left)
+		else:
+			_draw_slot(r, "", false, key_names[s], 0.0, 0)
+	# Duvar ve birlik
+	_draw_slot(Rect2(232, 329, 26, 26), "wall_wood", false, "Duvar", 0.0, 0)
+	_hud_text(Vector2(262, 347), "x%d" % me[11], 12, Color.WHITE)
+	_draw_slot(Rect2(292, 329, 26, 26), "unit_swordsman", false, "Birlik", 0.0, 0)
+	_hud_text(Vector2(322, 347), "x%d" % me[13], 12, Color.WHITE)
+
+
+## Kutu: ikon + (varsa) tuş adı; bekleme varsa üstten karartma ve kalan saniye. Hazırsa altın çerçeve.
+func _draw_slot(r: Rect2, icon_id: String, ready: bool, key: String, cd_ratio: float, cd_left: int) -> void:
+	hud.draw_style_box(UiTheme.slot_box(ready), r)
+	if icon_id != "":
+		UiTheme.draw_icon(hud, icon_id, r.position + Vector2(5, 5), 16.0)
+	if cd_ratio > 0.0:
+		var inner := r.grow(-2.0)
+		hud.draw_rect(Rect2(inner.position, Vector2(inner.size.x, inner.size.y * cd_ratio)), Color(0.02, 0.02, 0.06, 0.72))
+		_hud_text(r.position + Vector2(0, 17), str(cd_left), 12, Color.WHITE, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	if key != "":
+		_hud_text(r.position + Vector2(-8, -2), key, 8, UiTheme.GOLD_L if ready else UiTheme.DIM, r.size.x + 16.0, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+## Kill feed: sağ üstte, arkaplanlı satırlar. "A → B" satırı: takım renkli adlar + kılıç ikonu.
+func _draw_feed() -> void:
+	var y := 26.0
+	for e in feed:
+		var al: float = clampf(e[1], 0.0, 1.0)
+		var text: String = e[0]
+		var parts := text.split(" → ")
+		var w := _text_w(text, 10) + 10.0
+		if parts.size() == 2:
+			w = _text_w(parts[0], 10) + _text_w(parts[1], 10) + 28.0
+		var x := 636.0 - w
+		hud.draw_rect(Rect2(x, y - 1.0, w, 13.0), Color(0.05, 0.04, 0.1, 0.6 * al))
+		hud.draw_rect(Rect2(x, y - 1.0, 2.0, 13.0), Color(UiTheme.GOLD.r, UiTheme.GOLD.g, UiTheme.GOLD.b, al))
+		if parts.size() == 2:
+			var c0 := _team_color_of_name(parts[0])
+			var c1 := _team_color_of_name(parts[1])
+			_hud_text(Vector2(x + 5, y + 9), parts[0], 10, Color(c0.r, c0.g, c0.b, al))
+			var ix := x + 5 + _text_w(parts[0], 10) + 2
+			UiTheme.draw_icon(hud, "sword", Vector2(ix, y - 1), 12.0, Color(1, 1, 1, al))
+			_hud_text(Vector2(ix + 14, y + 9), parts[1], 10, Color(c1.r, c1.g, c1.b, al))
+		else:
+			_hud_text(Vector2(x + 5, y + 9), text, 10, Color(1, 1, 1, al))
+		y += 14.0
+
+
+func _team_color_of_name(n: String) -> Color:
+	for p in Net.players.values():
+		if p.name == n:
+			return UiTheme.TEAM[p.team]
+	return Color.WHITE
 
 
 func _draw_minimap() -> void:
 	var s := 0.1
-	var origin := Vector2(VIEW.x - ARENA.size.x * s - 4.0, VIEW.y - ARENA.size.y * s - 4.0)
-	hud.draw_rect(Rect2(origin, ARENA.size * s), Color(0, 0, 0, 0.55))
+	var origin := Vector2(VIEW.x - ARENA.size.x * s - 8.0, VIEW.y - ARENA.size.y * s - 8.0)
+	hud.draw_style_box(UiTheme.slot_box(false), Rect2(origin - Vector2(4, 4), ARENA.size * s + Vector2(8, 8)))
+	hud.draw_rect(Rect2(origin, ARENA.size * s), Color(0.04, 0.05, 0.1, 0.85))
 	for t in 2:
 		var bx := 0.0 if t == 0 else ARENA.size.x - BASE_W
-		hud.draw_rect(Rect2(origin + Vector2(bx, 0.0) * s, Vector2(BASE_W, ARENA.size.y) * s), _tint(TEAM_COLORS[t], 0.2))
+		hud.draw_rect(Rect2(origin + Vector2(bx, 0.0) * s, Vector2(BASE_W, ARENA.size.y) * s), _tint(TEAM_COLORS[t], 0.25))
 	for o in OBSTACLES:
 		hud.draw_rect(Rect2(origin + o.position * s, o.size * s), Color(0.5, 0.5, 0.55))
 	for f in snap.f:
