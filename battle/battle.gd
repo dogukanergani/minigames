@@ -55,11 +55,19 @@ const WALL_HP := {"wall_wood": 40, "wall_stone": 100}
 const SHIELD := {"shield_wood": 0.15, "shield_iron": 0.30}
 
 # Birim türleri (item id'leri ile aynı). UNIT_ORDER: anlık görüntüde kısa indeks.
-const UNIT_ORDER := ["unit_swordsman", "unit_archer"]
+const UNIT_ORDER := ["unit_swordsman", "unit_archer", "unit_artillery", "unit_shieldbearer"]
+# Ek alanlar: half = çarpışma/çizim yarı boyutu, aoe = alan hasarı yarıçapı, wmul = duvar hasar çarpanı,
+# armor = hasar azaltma, taunt = düşman birimleri önce buna saldırır.
 const UNIT_TYPES := {
-	"unit_swordsman": {"name": "Kılıççı", "hp": 50.0, "speed": 62.0, "dmg": 8.0, "range": 12.0, "cd": 0.6, "ranged": false},
-	"unit_archer": {"name": "Okçu", "hp": 30.0, "speed": 56.0, "dmg": 7.0, "range": 90.0, "cd": 0.9, "ranged": true},
+	"unit_swordsman": {"name": "Kılıççı", "hp": 50.0, "speed": 62.0, "dmg": 8.0, "range": 12.0, "cd": 0.6, "ranged": false, "half": 3.0},
+	"unit_archer": {"name": "Okçu", "hp": 30.0, "speed": 56.0, "dmg": 7.0, "range": 90.0, "cd": 0.9, "ranged": true, "half": 3.0},
+	"unit_artillery": {"name": "Topçu", "hp": 28.0, "speed": 40.0, "dmg": 16.0, "range": 160.0, "cd": 2.2, "ranged": true,
+		"half": 4.0, "aoe": 24.0, "wmul": 3.0},
+	"unit_shieldbearer": {"name": "Kalkancı", "hp": 140.0, "speed": 50.0, "dmg": 5.0, "range": 12.0, "cd": 0.8, "ranged": false,
+		"half": 4.0, "armor": 0.4, "taunt": true},
 }
+const SHELL_SPEED := 120.0
+const SEP_R := 9.0  # dost birimler bundan yakınsa birbirini iter
 const CMD_NAMES := ["Takip", "Saldır", "Bayrak"]
 const UNIT_AGGRO := [70.0, 100.0, 50.0]  # komuta göre düşman fark etme yarıçapı
 const UNIT_LEASH := 130.0  # Takip modunda kahramandan en fazla bu kadar uzaklaşır
@@ -79,6 +87,13 @@ var tick := 0
 var pl: Dictionary = {}  # peer_id -> kahraman durumu
 var units: Dictionary = {}  # uid -> birim durumu
 var next_uid := 1
+var next_wid := 1
+var booms_vis: Array = []  # istemci: patlama efektleri
+var booms: Array = []  # bu anlık görüntüde patlayanlar (çizim için)
+var stress := false
+var st_sum := 0.0
+var st_max := 0.0
+var st_n := 0
 var losses: Dictionary = {}  # peer_id -> ölen birim item id'leri
 var flags: Array = []
 var projectiles: Array = []
@@ -91,6 +106,7 @@ var sudden := false
 
 # --- İstemci durumu ---
 var snap: Dictionary = {}
+var snap_u: Array = []  # birimler: [uid, x, y, hp, max_hp, takım, tür]
 var view_pos: Dictionary = {}
 var view_u: Dictionary = {}
 var feed: Array = []
@@ -107,6 +123,7 @@ func _ready() -> void:
 	my_id = multiplayer.get_unique_id()
 	var args := OS.get_cmdline_user_args()
 	is_auto = "auto" in args
+	stress = "stress" in args
 	if "fast" in args:
 		captures_to_win = 1
 		respawn_time = 1.0
@@ -165,6 +182,8 @@ func _start() -> void:
 		pl[id] = _make_player(id, t, counts[t])
 		counts[t] += 1
 		_spawn_units(id, pl[id])
+		if stress:
+			_spawn_stress(id, pl[id])
 	flags = [_new_flag(0), _new_flag(1)]
 	countdown = countdown_time
 	time_left = time_limit
@@ -215,28 +234,61 @@ func _spawn_units(id: int, p: Dictionary) -> void:
 	for item_id in Game.inventory.get(id, []):
 		if not UNIT_TYPES.has(item_id):
 			continue
-		var t: Dictionary = UNIT_TYPES[item_id]
-		var angle := float(slot) * TAU / 4.0 + 0.5
-		units[next_uid] = {
-			"owner": id, "team": p.team, "type": item_id, "slot": slot,
-			"pos": p.pos + Vector2.from_angle(angle) * 22.0,
-			"hp": t.hp, "max_hp": t.hp, "cd": 0.0, "retarget": randf() * 0.25,
-			"tkind": 0, "tid": -1, "stuck": 0.0, "side": 0.0,
-			"side_sign": 1.0 if randf() < 0.5 else -1.0,
-		}
-		next_uid += 1
+		_add_unit(id, p, item_id, slot, false)
 		slot += 1
+
+
+func _add_unit(id: int, p: Dictionary, item_id: String, slot: int, fake: bool) -> void:
+	var t: Dictionary = UNIT_TYPES[item_id]
+	var angle := float(slot % 4) * TAU / 4.0 + 0.5
+	var ring := 22.0 + float(slot / 4) * 10.0
+	units[next_uid] = {
+		"owner": id, "team": p.team, "type": item_id, "slot": slot, "fake": fake,
+		"pos": p.pos + Vector2.from_angle(angle) * ring,
+		"hp": t.hp, "max_hp": t.hp, "cd": 0.0, "retarget": randf() * 0.25,
+		"tkind": 0, "tid": -1, "stuck": 0.0, "side": 0.0,
+		"side_sign": 1.0 if randf() < 0.5 else -1.0,
+		"half": t.half, "sep": Vector2.ZERO, "sep_t": randf() * 0.12,
+	}
+	next_uid += 1
+
+
+## Test amaçlı (stress argümanı): takım başına ~25 birime çıkarır. Sahte birimler kayıp sayılmaz.
+func _spawn_stress(id: int, p: Dictionary) -> void:
+	var have := 0
+	for u in units.values():
+		if u.owner == id:
+			have += 1
+	var team_players := 0
+	for q in pl.values():
+		if q.team == p.team:
+			team_players += 1
+	var want: int = 25 / maxi(1, team_players)
+	for i in range(have, want):
+		_add_unit(id, p, UNIT_ORDER[i % UNIT_ORDER.size()], i, true)
 
 
 # ============================ SUNUCU SİMÜLASYONU ============================
 
 func _physics_process(delta: float) -> void:
 	if multiplayer.is_server() and started and not over:
+		var t0 := Time.get_ticks_usec()
 		_sim(delta)
 		tick += 1
 		if tick % 2 == 0:
 			snap = _make_snapshot()
 			_snapshot.rpc(snap)
+			_snapshot_units.rpc(_pack_units())
+		if stress:
+			var ms := float(Time.get_ticks_usec() - t0) / 1000.0
+			st_sum += ms
+			st_max = maxf(st_max, ms)
+			st_n += 1
+			if st_n >= 300:
+				print("[stress] birim=%d  fizik adımı ort=%.2f ms  maks=%.2f ms (bütçe 16.6 ms)" % [units.size(), st_sum / st_n, st_max])
+				st_sum = 0.0
+				st_max = 0.0
+				st_n = 0
 	send_acc += delta
 	if send_acc >= SEND_INTERVAL and not snap.is_empty() and not over:
 		send_acc = 0.0
@@ -311,8 +363,8 @@ func _player_rect(c: Vector2) -> Rect2:
 	return Rect2(c - Vector2(HALF, HALF), Vector2(PSIZE, PSIZE))
 
 
-func _unit_rect(c: Vector2) -> Rect2:
-	return Rect2(c - Vector2(UHALF, UHALF), Vector2(USIZE, USIZE))
+func _unit_rect(c: Vector2, half := UHALF) -> Rect2:
+	return Rect2(c - Vector2(half, half), Vector2(half * 2.0, half * 2.0))
 
 
 func _rect_blocked(r: Rect2) -> bool:
@@ -389,11 +441,12 @@ func _damage_unit(uid: int, amount: float) -> void:
 	if not units.has(uid):
 		return
 	var u: Dictionary = units[uid]
-	u.hp -= amount
+	u.hp -= amount * (1.0 - UNIT_TYPES[u.type].get("armor", 0.0))
 	if u.hp <= 0.0:
-		if not losses.has(u.owner):
-			losses[u.owner] = []
-		losses[u.owner].append(u.type)  # kalıcı kayıp
+		if not u.fake:
+			if not losses.has(u.owner):
+				losses[u.owner] = []
+			losses[u.owner].append(u.type)  # kalıcı kayıp
 		units.erase(uid)
 
 
@@ -407,6 +460,11 @@ func _update_projectiles(dt: float) -> void:
 	for pr in projectiles.duplicate():
 		pr.pos += pr.vel * dt
 		pr.life -= dt
+		if pr.has("aoe"):  # top mermisi: engelleri aşar, hedef noktada patlar
+			if pr.life <= 0.0:
+				_explode(pr)
+				projectiles.erase(pr)
+			continue
 		var hit: bool = pr.life <= 0.0 or not ARENA.has_point(pr.pos)
 		if not hit:
 			for o in OBSTACLES:
@@ -430,12 +488,29 @@ func _update_projectiles(dt: float) -> void:
 		if not hit:
 			for uid in units.keys():
 				var u: Dictionary = units[uid]
-				if u.team != pr.team and _unit_rect(u.pos).grow(1.5).has_point(pr.pos):
+				if u.team != pr.team and _unit_rect(u.pos, u.half).grow(1.5).has_point(pr.pos):
 					_damage_unit(uid, pr.dmg)
 					hit = true
 					break
 		if hit:
 			projectiles.erase(pr)
+
+
+## Alan hasarı: düşman kahraman/birim tam, duvarlar wmul katı hasar alır.
+func _explode(pr: Dictionary) -> void:
+	var r: float = pr.aoe
+	for eid in pl.keys():
+		var e: Dictionary = pl[eid]
+		if e.team != pr.team and e.alive and e.pos.distance_to(pr.pos) <= r + HALF:
+			_damage(eid, pr.dmg, pr.by)
+	for uid in units.keys():
+		var u: Dictionary = units[uid]
+		if u.team != pr.team and u.pos.distance_to(pr.pos) <= r + u.half:
+			_damage_unit(uid, pr.dmg)
+	for wall in walls.duplicate():
+		if wall.team != pr.team and wall.rect.get_center().distance_to(pr.pos) <= r + WALL_SIZE * 0.5:
+			_damage_wall(wall, pr.dmg * pr.wmul)
+	booms.append([pr.pos.x, pr.pos.y, r])
 
 
 # --- Birim zekâsı ---
@@ -450,18 +525,23 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 	var spd: float = t.speed * speed_mul
 	u.cd = maxf(0.0, u.cd - dt)
 	u.retarget -= dt
+	u.sep_t -= dt
+	if u.sep_t <= 0.0:
+		u.sep_t = 0.12
+		_unit_separation(uid, u)
 	if u.tkind != 0 and not _target_valid(u):
 		u.tkind = 0
 	if u.retarget <= 0.0:
 		u.retarget = 0.25
-		_unit_retarget(u, owner_p, cmd)
+		_unit_retarget(u, t, owner_p, cmd)
 
 	if u.tkind != 0:
 		var tp: Vector2 = _target_pos(u)
-		if cmd == 0 and tp.distance_to(owner_p.pos) > UNIT_LEASH * 1.4:
+		if cmd == 0 and tp.distance_to(owner_p.pos) > UNIT_LEASH * 1.4 + t.range * 0.5:
 			u.tkind = 0  # Takip modunda çok uzağa kovalamaz
 		elif u.pos.distance_to(tp) <= t.range:
 			_unit_attack(u, t, tp)
+			_unit_move(u, u.sep * spd * 0.3 * dt)  # dururken de üst üste yığılma
 			return
 		else:
 			_unit_step(u, tp, spd, dt, t.range * 0.8)
@@ -469,12 +549,32 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 	# Hedef yok: komuta göre git
 	match cmd:
 		0:  # Takip: kahramanın etrafında formasyon
-			var slot_pos: Vector2 = owner_p.pos + Vector2.from_angle(float(u.slot) * TAU / 4.0 + 0.5) * 22.0
+			var ring := 22.0 + float(u.slot / 4) * 10.0
+			var slot_pos: Vector2 = owner_p.pos + Vector2.from_angle(float(u.slot % 4) * TAU / 4.0 + 0.5) * ring
 			_unit_step(u, slot_pos, spd, dt, 5.0)
 		1:  # Saldır: imlece
 			_unit_step(u, owner_p.cur, spd, dt, 10.0)
 		2:  # Bayrak: düşman bayrağına (kendi bayrağı çalındıysa taşıyanı kovala)
 			_unit_step(u, _flag_goal(u.team), spd, dt, 12.0)
+
+
+## Yakındaki dost birimlerden uzaklaşma vektörü (sep). Her 0.12 sn'de bir hesaplanır, ucuzdur.
+func _unit_separation(uid: int, u: Dictionary) -> void:
+	var push := Vector2.ZERO
+	for oid in units.keys():
+		if oid == uid:
+			continue
+		var o: Dictionary = units[oid]
+		var d: Vector2 = u.pos - o.pos
+		var dd := d.length_squared()
+		if dd >= SEP_R * SEP_R:
+			continue
+		if dd < 0.01:
+			push += Vector2.from_angle(randf() * TAU)
+		else:
+			var l := sqrt(dd)
+			push += d / l * (1.0 - l / SEP_R)
+	u.sep = push.limit_length(1.0)
 
 
 func _flag_goal(team: int) -> Vector2:
@@ -484,29 +584,45 @@ func _flag_goal(team: int) -> Vector2:
 	return flags[1 - team].pos
 
 
+func _find_wall(wid: int) -> Dictionary:
+	for w in walls:
+		if w.id == wid:
+			return w
+	return {}
+
+
 func _target_valid(u: Dictionary) -> bool:
 	if u.tkind == 1:
 		return pl.has(u.tid) and pl[u.tid].alive
+	if u.tkind == 3:
+		return not _find_wall(u.tid).is_empty()
 	return units.has(u.tid)
 
 
 func _target_pos(u: Dictionary) -> Vector2:
 	if u.tkind == 1:
 		return pl[u.tid].pos
+	if u.tkind == 3:
+		return _find_wall(u.tid).rect.get_center()
 	return units[u.tid].pos
 
 
-func _unit_retarget(u: Dictionary, owner_p: Dictionary, cmd: int) -> void:
+func _unit_retarget(u: Dictionary, t: Dictionary, owner_p: Dictionary, cmd: int) -> void:
 	var best := 1.0e9
 	var kind := 0
 	var tid := -1
 	var radius: float = UNIT_AGGRO[cmd]
+	if t.has("aoe"):
+		radius = maxf(radius, t.range)  # topçu menzili kadar uzağı görür
+	var leash := cmd == 0
+	var tbest := 1.0e9  # kalkancı (taunt) varsa onlar önce gelir
+	var tid_t := -1
 	for hid in pl.keys():
 		var h: Dictionary = pl[hid]
 		if h.team == u.team or not h.alive:
 			continue
 		var d: float = u.pos.distance_to(h.pos)
-		if d < best and d <= radius and (cmd != 0 or h.pos.distance_to(owner_p.pos) <= UNIT_LEASH):
+		if d < best and d <= radius and (not leash or h.pos.distance_to(owner_p.pos) <= UNIT_LEASH):
 			best = d
 			kind = 1
 			tid = hid
@@ -515,10 +631,27 @@ func _unit_retarget(u: Dictionary, owner_p: Dictionary, cmd: int) -> void:
 		if e.team == u.team:
 			continue
 		var d2: float = u.pos.distance_to(e.pos)
-		if d2 < best and d2 <= radius and (cmd != 0 or e.pos.distance_to(owner_p.pos) <= UNIT_LEASH):
+		if d2 > radius or (leash and e.pos.distance_to(owner_p.pos) > UNIT_LEASH):
+			continue
+		if d2 < best:
 			best = d2
 			kind = 2
 			tid = eid
+		if d2 < tbest and UNIT_TYPES[e.type].get("taunt", false):
+			tbest = d2
+			tid_t = eid
+	if tid_t >= 0:  # taunt: menzildeki Kalkancı'ya öncelik
+		kind = 2
+		tid = tid_t
+	if kind == 0 and t.has("wmul"):  # topçu: başka hedef yoksa duvarları döver
+		for w in walls:
+			if w.team == u.team:
+				continue
+			var d3: float = u.pos.distance_to(w.rect.get_center())
+			if d3 < best and d3 <= radius:
+				best = d3
+				kind = 3
+				tid = w.id
 	u.tkind = kind
 	u.tid = tid
 
@@ -527,7 +660,12 @@ func _unit_attack(u: Dictionary, t: Dictionary, tp: Vector2) -> void:
 	if u.cd > 0.0:
 		return
 	u.cd = t.cd
-	if t.ranged:
+	if t.has("aoe"):  # top mermisi: hedef noktaya uçar ve orada patlar
+		var dist: float = u.pos.distance_to(tp)
+		var dirs: Vector2 = (tp - u.pos).normalized()
+		projectiles.append({"pos": u.pos, "vel": dirs * SHELL_SPEED, "team": u.team, "dmg": t.dmg,
+			"life": dist / SHELL_SPEED, "by": u.owner, "aoe": t.aoe, "wmul": t.wmul})
+	elif t.ranged:
 		var dir: Vector2 = (tp - u.pos).normalized()
 		var speed := ARROW_SPEED * 0.8
 		projectiles.append({"pos": u.pos, "vel": dir * speed, "team": u.team, "dmg": t.dmg,
@@ -538,29 +676,40 @@ func _unit_attack(u: Dictionary, t: Dictionary, tp: Vector2) -> void:
 		_damage_unit(u.tid, t.dmg)
 
 
-## Hedefe doğru adım atar; engele takılırsa yan yürüyerek kurtulmaya çalışır.
+## Birimi engellere takılmadan kaydırır (eksen eksen).
+func _unit_move(u: Dictionary, d: Vector2) -> void:
+	if d.is_zero_approx():
+		return
+	var nx: Vector2 = u.pos + Vector2(d.x, 0.0)
+	if not _rect_blocked(_unit_rect(nx, u.half)):
+		u.pos = nx
+	var ny: Vector2 = u.pos + Vector2(0.0, d.y)
+	if not _rect_blocked(_unit_rect(ny, u.half)):
+		u.pos = ny
+
+
+## Hedefe doğru adım atar (dostlardan hafifçe kaçınarak); engele takılırsa yan yürüyerek kurtulur.
 func _unit_step(u: Dictionary, goal: Vector2, spd: float, dt: float, stop_dist: float) -> void:
 	var d: Vector2 = goal - u.pos
 	var dist := d.length()
 	if dist <= stop_dist:
 		u.stuck = 0.0
+		_unit_move(u, u.sep * spd * 0.3 * dt)
 		return
 	var dir := d / dist
 	if u.side > 0.0:
 		u.side -= dt
 		dir = dir.rotated(u.side_sign * PI * 0.5)
+	elif not u.sep.is_zero_approx():
+		dir = (dir + u.sep * 0.7).normalized()
 	var step := minf(spd * dt, dist)
 	var before: Vector2 = u.pos
-	var nx: Vector2 = u.pos + Vector2(dir.x * step, 0.0)
-	if not _rect_blocked(_unit_rect(nx)):
-		u.pos = nx
-	var ny: Vector2 = u.pos + Vector2(0.0, dir.y * step)
-	if not _rect_blocked(_unit_rect(ny)):
-		u.pos = ny
+	_unit_move(u, dir * step)
 	if before.distance_to(u.pos) < step * 0.3:
 		u.stuck += dt
 		if u.stuck > 0.2 and u.side <= 0.0:
 			u.side = 0.5
+			u.side_sign = -u.side_sign  # takılınca yön değiştir: iki yönü de dener
 			u.stuck = 0.0
 	else:
 		u.stuck = 0.0
@@ -691,7 +840,8 @@ func _place_wall(p: Dictionary) -> void:
 			return
 	var kind: String = p.walls.pop_front()
 	walls.append({"rect": r, "hp": float(WALL_HP[kind]), "max": float(WALL_HP[kind]),
-		"team": p.team, "kind": kind})
+		"team": p.team, "kind": kind, "id": next_wid})
+	next_wid += 1
 
 
 # --- Herkese yayılanlar ---
@@ -713,17 +863,43 @@ func _make_snapshot() -> Dictionary:
 		fl.append([f.pos.x, f.pos.y, f.state])
 	var prs := []
 	for pr in projectiles:
-		prs.append([pr.pos.x, pr.pos.y, pr.team])
+		prs.append([pr.pos.x, pr.pos.y, pr.team, pr.has("aoe")])
 	var ws := []
 	for w in walls:
 		ws.append([w.rect.position.x, w.rect.position.y, w.hp, w.max, w.team])
-	return {"p": ps, "u": us, "f": fl, "pr": prs, "w": ws, "t": time_left, "s": scores.duplicate(),
-		"cd": countdown, "sd": sudden}
+	snap_u = us
+	var res := {"p": ps, "f": fl, "pr": prs, "w": ws, "t": time_left, "s": scores.duplicate(),
+		"cd": countdown, "sd": sudden, "bm": booms.duplicate()}
+	booms.clear()
+	return res
 
 
 @rpc("authority", "unreliable")
 func _snapshot(s: Dictionary) -> void:
 	snap = s
+
+
+## Birimler ayrı ve sıkıştırılmış gider (50 birim tek pakette MTU'yu aşıyordu): birim başına 4 tamsayı.
+func _pack_units() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for a in snap_u:
+		out.append(a[0])
+		out.append(roundi(a[1] * 8.0) | (roundi(a[2] * 8.0) << 16))
+		out.append(ceili(a[3]) | (ceili(a[4]) << 12))
+		out.append(a[5] | (maxi(a[6], 0) << 4))
+	return out
+
+
+@rpc("authority", "unreliable")
+func _snapshot_units(packed: PackedInt32Array) -> void:
+	var us := []
+	for i in range(0, packed.size(), 4):
+		var pos := packed[i + 1]
+		var hp := packed[i + 2]
+		var ty := packed[i + 3]
+		us.append([packed[i], float(pos & 0xFFFF) / 8.0, float(pos >> 16) / 8.0, float(hp & 0xFFF), float(hp >> 12),
+			ty & 15, ty >> 4])
+	snap_u = us
 
 
 @rpc("authority", "call_local", "reliable")
@@ -847,13 +1023,16 @@ func _process(delta: float) -> void:
 		else:
 			view_pos[id] = view_pos[id].lerp(target, k)
 	var new_u := {}
-	for a in snap.u:
+	for a in snap_u:
 		var target := Vector2(a[1], a[2])
 		var old: Vector2 = view_u.get(a[0], target)
 		new_u[a[0]] = target if old.distance_to(target) > 40.0 else old.lerp(target, k)
 	view_u = new_u
 	if snap.p.has(my_id) and not over:
 		camera.position = view_pos[my_id].round()
+	for bv in booms_vis:
+		bv[2] -= delta
+	booms_vis = booms_vis.filter(func(e): return e[2] > 0.0)
 	for entry in feed:
 		entry[1] -= delta
 	feed = feed.filter(func(e): return e[1] > 0.0)
@@ -896,17 +1075,35 @@ func _draw() -> void:
 		draw_rect(Rect2(fp.x + 1.0, fp.y - 14.0, 9.0, 7.0), TEAM_COLORS[t])
 
 	# Birimler (küçük, soluk)
-	for a in snap.u:
+	for a in snap_u:
 		var upos: Vector2 = view_u.get(a[0], Vector2(a[1], a[2]))
 		var ucol: Color = TEAM_COLORS[a[5]].darkened(0.25)
-		draw_rect(Rect2(upos.x - UHALF, upos.y - UHALF, USIZE, USIZE), ucol)
-		if a[6] == 1:  # okçu: ortada açık nokta
-			draw_rect(Rect2(upos.x - 1.0, upos.y - 1.0, 2.0, 2.0), Color(1, 1, 1, 0.85))
+		var uh: float = UNIT_TYPES[UNIT_ORDER[a[6]]].half
+		var ur := Rect2(upos.x - uh, upos.y - uh, uh * 2.0, uh * 2.0)
+		draw_rect(ur, ucol)
+		match a[6]:
+			1:  # okçu: ortada açık nokta
+				draw_rect(Rect2(upos.x - 1.0, upos.y - 1.0, 2.0, 2.0), Color(1, 1, 1, 0.85))
+			2:  # topçu: büyük, ortasında koyu namlu + sarı uç
+				draw_rect(Rect2(upos.x - 1.0, upos.y - 5.0, 2.0, 6.0), Color(0.1, 0.1, 0.12))
+				draw_rect(Rect2(upos.x - 1.0, upos.y - 6.0, 2.0, 1.5), Color(1.0, 0.8, 0.3))
+			3:  # kalkancı: kalın beyaz çerçeve + ortada kalkan çizgisi
+				draw_rect(ur.grow(1.0), Color(0.92, 0.92, 0.95), false, 2.0)
+				draw_rect(Rect2(upos.x - 0.5, upos.y - 3.0, 1.0, 6.0), Color(0.92, 0.92, 0.95))
 		if a[3] < a[4]:
-			draw_rect(Rect2(upos.x - UHALF, upos.y - 6.0, USIZE * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
+			draw_rect(Rect2(upos.x - uh, upos.y - uh - 3.0, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
 
 	for pr in snap.pr:
-		draw_rect(Rect2(pr[0] - 1.5, pr[1] - 1.5, 3.0, 3.0), Color(1.0, 0.95, 0.5))
+		if pr[3]:  # top mermisi
+			draw_circle(Vector2(pr[0], pr[1]), 2.5, Color(0.2, 0.2, 0.22))
+		else:
+			draw_rect(Rect2(pr[0] - 1.5, pr[1] - 1.5, 3.0, 3.0), Color(1.0, 0.95, 0.5))
+	for bm in snap.bm:  # patlama (kısa süre görünür)
+		booms_vis.append([Vector2(bm[0], bm[1]), bm[2], 0.3])
+	snap.bm = []
+	for bv in booms_vis:
+		var k: float = bv[2] / 0.3
+		draw_circle(bv[0], bv[1] * (1.3 - k * 0.3), Color(1.0, 0.6, 0.2, 0.45 * k))
 
 	# Kahramanlar (büyük, belirgin, isimli)
 	for id in snap.p.keys():
@@ -976,7 +1173,7 @@ func _draw_minimap() -> void:
 		hud.draw_rect(Rect2(origin + o.position * s, o.size * s), Color(0.5, 0.5, 0.55))
 	for f in snap.f:
 		hud.draw_rect(Rect2(origin + Vector2(f[0], f[1]) * s - Vector2(1, 1), Vector2(3, 3)), Color(1, 1, 0.4))
-	for a in snap.u:
+	for a in snap_u:
 		hud.draw_rect(Rect2(origin + Vector2(a[1], a[2]) * s, Vector2(1, 1)), TEAM_COLORS[a[5]])
 	for id in snap.p.keys():
 		var a: Array = snap.p[id]

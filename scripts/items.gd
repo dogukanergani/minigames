@@ -15,6 +15,8 @@ const ITEMS := [
 	# Birimler: kahramanın birliğine katılır. Savaşta ölünce kalıcı gider.
 	{"id": "unit_swordsman", "name": "Kılıççı", "kind": "Birim", "cost": 40, "stock": 8},
 	{"id": "unit_archer", "name": "Okçu", "kind": "Birim", "cost": 50, "stock": 6},
+	{"id": "unit_artillery", "name": "Topçu", "kind": "Birim", "cost": 80, "stock": 2},
+	{"id": "unit_shieldbearer", "name": "Kalkancı", "kind": "Birim", "cost": 60, "stock": 3},
 ]
 
 
