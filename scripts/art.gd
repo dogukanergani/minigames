@@ -263,12 +263,22 @@ func draw_flag(canvas: CanvasItem, team: int, fp: Vector2) -> bool:
 	return true
 
 
-func draw_projectile(canvas: CanvasItem, pos: Vector2, team: int, ball: bool) -> bool:
-	var t := tex("fx/ball.png" if ball else "fx/arrow.png")
+## Mermi: `angle` hareket yönü (radyan). Ok yöne göre döner, top dönmez. Özgün pakette fx/arrow.png,
+## Tiny Swords'ta units/<takım>/archer_arrow.png (ikisi de sağa bakar). Doku yoksa false (kutu yedeği çizer).
+func draw_projectile(canvas: CanvasItem, pos: Vector2, team: int, ball: bool, angle := 0.0) -> bool:
+	var t: Texture2D
+	var sc := world_scale()
+	if ball:
+		t = tex("fx/ball.png")
+	elif custom:
+		t = tex("fx/arrow.png")
+	else:
+		t = tex("units/%s/archer_arrow.png" % TEAM_DIR[team])
+		sc = 1.0 / 5.0
 	if t == null:
 		return false
-	var size := Vector2(t.get_width(), t.get_height()) * world_scale()
-	canvas.draw_set_transform(pos, 0.0, Vector2(-1.0 if (team == 1 and not ball) else 1.0, 1.0))
+	var size := Vector2(t.get_width(), t.get_height()) * sc
+	canvas.draw_set_transform(pos, 0.0 if ball else angle, Vector2.ONE)
 	canvas.draw_texture_rect(t, Rect2(-size * 0.5, size), false)
 	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	return true
