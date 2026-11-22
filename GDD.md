@@ -81,6 +81,7 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 | Kalkan | Tahta, demir | Hasar azaltır |
 | Duvar | Tahta, taş duvar | Yerleştirilebilir, bayrağı korur |
 | Ekstra | Hız, can, tuzak | 🧪 "ekstra özellikler" |
+| **Yetenek** | Atılma, Kalkan Patlaması, Savaş Narası | ✅ tuşla kullanılır, en fazla 2 (bkz. bölüm 8c) |
 
 - ✅ **Stok sınırlıdır:** bir eşyayı alan oyuncu onu diğerlerinden alır. Bu yüzden minigame sıralaması (ilk seçme hakkı) gerçekten değerli olur.
 - ✅ **Uygulanan akış:** Sıra minigame sıralamasına göre döner. Sırası gelen **1 eşya alır ya da pas geçer** (15 sn süre). Pas geçen / süresi dolan / parası yetmeyen oyuncu o marketten çıkar. Herkes bitince market kapanır.
@@ -130,6 +131,23 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - **Kazanma:** İlk 3 bayrak ya da 5 dk. Süre dolunca beraberlikte altın bayrak. Dost ateşi yok.
 - **Ağ:** Sunucu simülasyonu çalıştırır, istemciler girdi yollar, ~30 Hz anlık görüntü alır. ✅ Anlık görüntü tek `PackedInt32Array` olarak sıkıştırılmıştır (5v5'te ~300 bayt, MTU 1392 altında). ✅ **Kendi kahramanın için istemci tarafı tahmin (prediction)** var: girdi hemen uygulanır, sunucu cevabı gelince onaylanmamış girdiler yeniden oynatılarak düzeltilir (ping ~240 ms'de ort. sapma ~6 px). Diğer oyuncular ve birimler sunucudan gelen görüntüyle çizilir.
 - **Test:** `net_test` + `fast` argümanı ile otomatik bot testi (öldürme, bayrak, kazanma).
+
+## 8c. Kahraman kimliği: yetenekler marketten ✅
+
+**Karar:** Kahraman **sınıfı yoktur**. Herkes aynı kahramanla başlar, kimlik **marketten alınan eşyalar, birimler ve yeteneklerden** gelir. Böylece "güç marketten gelsin" sütunu korunur, denge tek yerde kalır, yanlış alım satılarak düzeltilir.
+
+**Yetenekler** (markette "Yetenek" kategorisi, kahraman en fazla **2** taşır, `Game.ABILITY_CAP`):
+
+| Yetenek | Tuş | Etki | Bekleme | Fiyat |
+|---|---|---|---|---|
+| **Atılma** | Boşluk / F | Bakılan yöne anında 70 piksel ilerler (engelde durur) | 6 sn | 60 |
+| **Kalkan Patlaması** | Boşluk / F | Etraftaki düşmanlara 15 hasar + geri itme (yarıçap 40), 2 sn %50 hasar azaltma | 10 sn | 80 |
+| **Savaş Narası** | Boşluk / F | 5 sn boyunca birliğin %40 hızlı ve %50 güçlü olur | 20 sn | 70 |
+
+- 1. yetenek **Boşluk**, 2. yetenek **F**. Ekranın altında bekleme süresi görünür ("[Boşluk] Atılma HAZIR").
+- Kahraman ölüyken yetenek kullanılamaz. Yetenekler satılabilir (%70 iade), sınır dolunca yenisi için birini satmak gerekir.
+- 🧪 Sayılar taslak, oynayarak ayarlanır. Atılma şu an sunucuda işlenir (ping yüksekse kısa bir gecikme hissedilir, tahmin dışı).
+- ❓ Sonraki yetenek fikirleri: tuzak koyma, bayrağı geri çağırma, görünmezlik, birlik çağırma, iyileşme.
 
 ## 8b. Kahraman + Birlik sistemi (yeni yön, 🧪 taslak)
 

@@ -119,12 +119,19 @@ func _build_ui() -> void:
 
 	var body := HBoxContainer.new()
 	body.add_theme_constant_override("separation", 16)
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	root.add_child(body)
 
+	# Eşya sayısı arttıkça ekrana sığmaz: liste kaydırılabilir (fare tekerleği)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	body.add_child(scroll)
 	var items_col := VBoxContainer.new()
 	items_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	items_col.add_theme_constant_override("separation", 1)
-	body.add_child(items_col)
+	scroll.add_child(items_col)
 	for it in Items.ITEMS:
 		var b := Button.new()
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
@@ -356,8 +363,16 @@ func _auto_play() -> void:  # test için otomatik oyuncu
 		return
 	auto_calls += 1
 	var owned: Array = Game.inventory.get(my, [])
-	if auto_calls == 2 and not owned.is_empty():
+	# Test: `ab=dash|burst|rally` verilen yeteneği tercih et (savaşta yetenek yolunu sınamak için)
+	var pref := ""
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("ab="):
+			pref = "ability_" + a.get_slice("=", 1)
+	if auto_calls == 2 and pref == "" and not owned.is_empty():
 		_request_sell(owned[owned.size() - 1])  # satma testi: sonra aynı tur alışverişe devam
+	if pref != "" and stock.get(pref, 0) > 0 and not owned.has(pref) and Game.can_buy(my, Items.get_item(pref)):
+		_request_buy(pref)
+		return
 	for it in Items.ITEMS:
 		if stock.get(it.id, 0) > 0 and Game.can_buy(my, it):
 			_request_buy(it.id)

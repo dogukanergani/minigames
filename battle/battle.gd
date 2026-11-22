@@ -49,6 +49,21 @@ const WEAPONS := {
 	"spear": {"name": "Mızrak", "dmg": 16.0, "range": 36.0, "cd": 0.6, "ranged": false},
 	"bow": {"name": "Yay", "dmg": 12.0, "range": 0.0, "cd": 0.7, "ranged": true},
 }
+# Yetenekler (markette "Yetenek" olarak satılır, en fazla 2 tane: Boşluk = 1., F = 2.)
+const ABILITIES := {
+	"ability_dash": {"name": "Atılma", "cd": 6.0},
+	"ability_burst": {"name": "Kalkan Patlaması", "cd": 10.0},
+	"ability_rally": {"name": "Savaş Narası", "cd": 20.0},
+}
+const ABILITY_ORDER := ["ability_dash", "ability_burst", "ability_rally"]  # anlık görüntüde kısa indeks
+const DASH_DIST := 70.0  # Atılma: bakılan yöne anında bu kadar ilerler (engelde durur)
+const BURST_R := 40.0  # Kalkan Patlaması: yarıçap, hasar, geri itme, kısa süreli %50 hasar azaltma
+const BURST_DMG := 15.0
+const BURST_PUSH := 24.0
+const SHIELD_TIME := 2.0
+const RALLY_TIME := 5.0  # Savaş Narası: birliğin bu süre hızlı (x1.4) ve güçlü (x1.5) olur
+const RALLY_SPEED := 1.4
+const RALLY_DMG := 1.5
 const SUDDEN_MAX := 120.0  # altın bayrak en fazla bu kadar sürer (sn)
 const ARROW_SPEED := 220.0
 const ARROW_LIFE := 0.9
@@ -118,6 +133,7 @@ var camera: Camera2D
 var hud: Control
 var bot_kill_done := false
 var bot_cmd_sent := false
+var bot_ab_last := [0, 0]  # botun yetenekleri son kullandığı an (ms)
 var is_auto := false
 
 # Kendi kahramanın için istemci tarafı tahmin (prediction): girdi hemen uygulanır,
@@ -239,6 +255,10 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 		for item in inv:
 			if item == w:
 				wall_list.append(w)
+	var abil: Array = []
+	for item in inv:
+		if ABILITIES.has(item) and abil.size() < 2:
+			abil.append(item)
 	var max_hp: int = BASE_HP + (40 if inv.has("heart") else 0)
 	var spd: float = BASE_SPEED * (1.2 if inv.has("boots") else 1.0) * speed_mul
 	var pos := _spawn_pos(team, idx)
@@ -248,6 +268,7 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 		"aim": 0.0 if team == 0 else PI, "cd": 0.0, "atk_vis": 0.0,
 		"weapons": weapons, "wsel": 0, "armor": armor, "speed": spd, "walls": wall_list,
 		"cmd": 0,
+		"abil": abil, "ab_cd": [0.0, 0.0], "shield_t": 0.0, "rally_t": 0.0,
 	}
 
 
@@ -373,6 +394,10 @@ func _finish(winner: int) -> void:
 
 
 func _update_player(id: int, p: Dictionary, dt: float) -> void:
+	for i in 2:
+		p.ab_cd[i] = maxf(0.0, p.ab_cd[i] - dt)
+	p.shield_t = maxf(0.0, p.shield_t - dt)
+	p.rally_t = maxf(0.0, p.rally_t - dt)
 	if not p.alive:
 		p.respawn -= dt
 		if p.respawn <= 0.0:
@@ -468,7 +493,8 @@ func _in_arc(delta: Vector2, aim: float) -> bool:
 
 func _damage(target_id: int, amount: float, by: int) -> void:
 	var t: Dictionary = pl[target_id]
-	t.hp -= amount * (1.0 - t.armor)
+	var shield: float = 0.5 if t.shield_t > 0.0 else 1.0  # Kalkan Patlaması'nın kısa koruması
+	t.hp -= amount * (1.0 - t.armor) * shield
 	if t.hp <= 0.0 and t.alive:
 		t.alive = false
 		t.respawn = respawn_time
@@ -562,7 +588,7 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 	var owner_p: Dictionary = pl[u.owner]
 	var cmd: int = owner_p.cmd
 	var t: Dictionary = UNIT_TYPES[u.type]
-	var spd: float = t.speed * speed_mul
+	var spd: float = t.speed * speed_mul * (RALLY_SPEED if owner_p.rally_t > 0.0 else 1.0)
 	u.cd = maxf(0.0, u.cd - dt)
 	u.retarget -= dt
 	u.sep_t -= dt
@@ -700,20 +726,22 @@ func _unit_attack(u: Dictionary, t: Dictionary, tp: Vector2) -> void:
 	if u.cd > 0.0:
 		return
 	u.cd = t.cd
+	# Savaş Narası etkisindeyse sahibinin birlikleri %50 daha çok hasar verir
+	var dmg: float = t.dmg * (RALLY_DMG if pl.has(u.owner) and pl[u.owner].rally_t > 0.0 else 1.0)
 	if t.has("aoe"):  # top mermisi: hedef noktaya uçar ve orada patlar
 		var dist: float = u.pos.distance_to(tp)
 		var dirs: Vector2 = (tp - u.pos).normalized()
-		projectiles.append({"pos": u.pos, "vel": dirs * SHELL_SPEED, "team": u.team, "dmg": t.dmg,
+		projectiles.append({"pos": u.pos, "vel": dirs * SHELL_SPEED, "team": u.team, "dmg": dmg,
 			"life": dist / SHELL_SPEED, "by": u.owner, "aoe": t.aoe, "wmul": t.wmul})
 	elif t.ranged:
 		var dir: Vector2 = (tp - u.pos).normalized()
 		var speed := ARROW_SPEED * 0.8
-		projectiles.append({"pos": u.pos, "vel": dir * speed, "team": u.team, "dmg": t.dmg,
+		projectiles.append({"pos": u.pos, "vel": dir * speed, "team": u.team, "dmg": dmg,
 			"life": t.range / speed + 0.15, "by": u.owner})
 	elif u.tkind == 1:
-		_damage(u.tid, t.dmg, u.owner)
+		_damage(u.tid, dmg, u.owner)
 	else:
-		_damage_unit(u.tid, t.dmg)
+		_damage_unit(u.tid, dmg)
 
 
 ## Birimi engellere takılmadan kaydırır (eksen eksen).
@@ -869,6 +897,51 @@ func _srv_action(kind: int) -> void:
 		p.wsel = (p.wsel + 1) % p.weapons.size()
 	elif kind == 0:  # duvar koy
 		_place_wall(p)
+	elif kind == 5 or kind == 6:  # yetenek: 5 = Boşluk (1. yetenek), 6 = F (2. yetenek)
+		_use_ability(id, p, kind - 5)
+
+
+func _use_ability(id: int, p: Dictionary, slot: int) -> void:
+	if slot >= p.abil.size() or p.ab_cd[slot] > 0.0:
+		return
+	var ab: String = p.abil[slot]
+	p.ab_cd[slot] = ABILITIES[ab].cd
+	if is_auto:
+		print("[yetenek] ", _name_of(id), " ", ab)
+	match ab:
+		"ability_dash":
+			booms.append([p.pos.x, p.pos.y, 8.0])
+			var dir := Vector2.from_angle(p.aim)
+			var moved := 0.0
+			while moved < DASH_DIST:  # 2 piksellik adımlarla, engele çarpana dek
+				var next: Vector2 = p.pos + dir * 2.0
+				if _rect_blocked(_player_rect(next)):
+					break
+				p.pos = next
+				moved += 2.0
+		"ability_burst":
+			p.shield_t = SHIELD_TIME
+			booms.append([p.pos.x, p.pos.y, BURST_R])
+			for eid in pl.keys():
+				var e: Dictionary = pl[eid]
+				if e.team == p.team or not e.alive:
+					continue
+				var d: Vector2 = e.pos - p.pos
+				if d.length() <= BURST_R + HALF:
+					_damage(eid, BURST_DMG, id)
+					_move(e, d.normalized() * BURST_PUSH)
+			for uid in units.keys():
+				if not units.has(uid) or units[uid].team == p.team:
+					continue
+				var d2: Vector2 = units[uid].pos - p.pos
+				if d2.length() <= BURST_R + UHALF:
+					var push: Vector2 = d2.normalized() * BURST_PUSH
+					_damage_unit(uid, BURST_DMG)
+					if units.has(uid):
+						_unit_move(units[uid], push)
+		"ability_rally":
+			p.rally_t = RALLY_TIME
+			booms.append([p.pos.x, p.pos.y, 18.0])
 
 
 func _place_wall(p: Dictionary) -> void:
@@ -902,8 +975,11 @@ func _make_snapshot() -> Dictionary:
 	var ps := {}
 	for id in pl.keys():
 		var p: Dictionary = pl[id]
+		var a1: int = ABILITY_ORDER.find(p.abil[0]) + 1 if p.abil.size() > 0 else 0  # 0 = yok
+		var a2: int = ABILITY_ORDER.find(p.abil[1]) + 1 if p.abil.size() > 1 else 0
 		ps[id] = [p.pos.x, p.pos.y, p.hp, p.max_hp, p.team, p.alive, p.carrying, p.aim,
-			p.weapons[p.wsel], p.atk_vis, p.respawn, p.walls.size(), p.cmd, unit_counts.get(id, 0)]
+			p.weapons[p.wsel], p.atk_vis, p.respawn, p.walls.size(), p.cmd, unit_counts.get(id, 0),
+			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0]
 	var fl := []
 	for f in flags:
 		fl.append([f.pos.x, f.pos.y, f.state])
@@ -968,6 +1044,10 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 		var ack := int(inputs.get(id, {}).get("seq", 0)) & 255
 		out.append(aim8 | (clampi(ceili(a[10]), 0, 15) << 8) | (clampi(int(a[11]), 0, 15) << 12)
 			| (clampi(int(a[13]), 0, 63) << 16) | (ack << 22))
+		# Yetenekler: indeks (0 = yok), bekleme (sn), kalkan ve narayla güçlenme göstergeleri
+		out.append(clampi(int(a[14]), 0, 7) | (clampi(int(a[15]), 0, 7) << 3)
+			| (clampi(int(a[16]), 0, 31) << 6) | (clampi(int(a[17]), 0, 31) << 11)
+			| (int(a[18]) << 16) | (int(a[19]) << 17))
 	for pr in s.pr:
 		out.append(_q(pr[0]) | (_q(pr[1]) << 16))
 		out.append(int(pr[2]) | (int(pr[3]) << 1))
@@ -998,7 +1078,8 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 		var pos := a[i + 1]
 		var w2 := a[i + 2]
 		var w3 := a[i + 3]
-		i += 4
+		var w4 := a[i + 4]
+		i += 5
 		var wi := (w2 >> 22) & 7
 		ps[id] = [
 			float(pos & 0xFFFF) / 8.0, float((pos >> 16) & 0xFFFF) / 8.0,
@@ -1006,7 +1087,8 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 			float(w3 & 255) / 256.0 * TAU - PI,
 			weapon_order[wi] if wi < weapon_order.size() else "fist",
 			0.15 if ((w2 >> 27) & 1) == 1 else 0.0,
-			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63]
+			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63,
+			w4 & 7, (w4 >> 3) & 7, (w4 >> 6) & 31, (w4 >> 11) & 31, ((w4 >> 16) & 1) == 1, ((w4 >> 17) & 1) == 1]
 		acks[id] = (w3 >> 22) & 255
 	snap_ack = acks
 	var prs := []
@@ -1171,6 +1253,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_1: kind = 2
 			KEY_2: kind = 3
 			KEY_3: kind = 4
+			KEY_SPACE: kind = 5  # 1. yetenek
+			KEY_F: kind = 6  # 2. yetenek
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 		kind = 0
 	if kind >= 0:
@@ -1216,6 +1300,12 @@ func _bot_input() -> Dictionary:
 		_send_action(3)  # birliği "Saldır" komutuna al (komut yolunu test eder)
 	if not me[5]:
 		return res
+	# Yetenekleri hazır oldukça kullan (yetenek yolunu test eder)
+	var now_ms := Time.get_ticks_msec()
+	for s in 2:
+		if me[14 + s] > 0 and me[16 + s] <= 0 and now_ms - bot_ab_last[s] > 1500:
+			bot_ab_last[s] = now_ms
+			_send_action(5 + s)
 	var target := mypos
 	if not bot_kill_done:
 		var enemy: Array = []
@@ -1350,6 +1440,10 @@ func _draw() -> void:
 		draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
 		var outline := Color.WHITE if id == my_id else Color(0.05, 0.05, 0.08)
 		draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
+		if a[18]:  # Kalkan Patlaması koruması
+			draw_arc(pos, 11.0, 0.0, TAU, 20, Color(0.4, 0.8, 1.0, 0.9), 1.5)
+		if a[19]:  # Savaş Narası: birlik güçlü
+			draw_arc(pos, 14.0, 0.0, TAU, 20, Color(1.0, 0.85, 0.3, 0.9), 1.5)
 		var aim_a: float = a[7]
 		if id == my_id and not is_auto:
 			aim_a = (get_global_mouse_position() - pos).angle()  # kendi nişanım gecikmesiz
@@ -1384,11 +1478,23 @@ func _draw_hud() -> void:
 		_text(hud, Vector2(0, 150), "HAZIRLAN: %d" % ceili(snap.cd), 20, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 		_text(hud, Vector2(0, 172), "WASD hareket · sol tık saldırı · Q silah · E duvar", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 		_text(hud, Vector2(0, 186), "1 Takip · 2 Saldır (imlece) · 3 Bayrak  (birliğin için)", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
+		_text(hud, Vector2(0, 200), "Boşluk / F: yeteneklerin (markette aldıysan)", 10, Color(1, 1, 1, 0.85), VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 	if snap.p.has(my_id):
 		var me: Array = snap.p[my_id]
 		hud.draw_rect(Rect2(0, 340, 400, 20), Color(0, 0, 0, 0.45))
 		_text(hud, Vector2(6, 354), "%s   Can %d/%d   Duvar: %d   Birlik: %d (%s)" % [
 			WEAPONS[me[8]].name, ceili(me[2]), me[3], me[11], me[13], CMD_NAMES[me[12]]], 10, Color.WHITE)
+		var parts: Array = []
+		var key_names := ["Boşluk", "F"]
+		for s in 2:
+			var ai: int = me[14 + s]
+			if ai > 0:
+				var cd_left: int = me[16 + s]
+				parts.append("[%s] %s %s" % [key_names[s], ABILITIES[ABILITY_ORDER[ai - 1]].name,
+					"HAZIR" if cd_left <= 0 else "%d sn" % cd_left])
+		if not parts.is_empty():
+			hud.draw_rect(Rect2(0, 322, 400, 16), Color(0, 0, 0, 0.45))
+			_text(hud, Vector2(6, 334), "   ".join(parts), 10, Color(1.0, 0.95, 0.6))
 		if not me[5]:
 			_text(hud, Vector2(0, 170), "Yeniden doğuyorsun: %d" % ceili(me[10]), 14, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 	var y := 28.0

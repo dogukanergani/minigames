@@ -14,6 +14,8 @@ const SELL_RATE := 0.7
 
 ## Birlik: oyuncu başına en fazla bu kadar birim. Herkes bedava Kılıççı ile başlar.
 const UNIT_CAP := 4
+## Savaşta tuşla kullanılan yetenekler: kahraman en fazla bu kadarını taşır (Boşluk ve F).
+const ABILITY_CAP := 2
 const STARTING_UNITS := ["unit_swordsman", "unit_swordsman"]
 
 var coins: Dictionary = {}  # peer_id -> int
@@ -33,19 +35,28 @@ func reset() -> void:
 	coins_changed.emit()
 
 
-func unit_count(id: int) -> int:
+func count_kind(id: int, kind: String) -> int:
 	var n := 0
 	for item_id in inventory.get(id, []):
-		if Items.get_item(item_id).get("kind", "") == "Birim":
+		if Items.get_item(item_id).get("kind", "") == kind:
 			n += 1
 	return n
 
 
-## Parası yetiyor mu ve (birimse) birlik sınırı doluyor mu?
+func unit_count(id: int) -> int:
+	return count_kind(id, "Birim")
+
+
+## Parası yetiyor mu ve (birim/yetenekse) taşıma sınırı doluyor mu?
 func can_buy(id: int, item: Dictionary) -> bool:
 	if coins.get(id, 0) < item.cost:
 		return false
-	return item.kind != "Birim" or unit_count(id) < UNIT_CAP
+	match item.kind:
+		"Birim":
+			return unit_count(id) < UNIT_CAP
+		"Yetenek":
+			return count_kind(id, "Yetenek") < ABILITY_CAP
+	return true
 
 
 ## Savaşta ölen birimleri envanterden kalıcı olarak siler.

@@ -46,6 +46,10 @@ Write-Host "--- İstemci ayrılıyor (host izlenir)"
 foreach ($q in 4, 10, 16, 22, 28) { Run-Case "istemci ayrıldı (oyundan $q sn sonra)" @() @("quitafter=$q") "host" "MAÇ BİTTİ|SAVAŞ BİTTİ" }
 Write-Host "--- Host ayrılıyor (istemci izlenir)"
 foreach ($q in 4, 12, 20) { Run-Case "host ayrıldı (oyundan $q sn sonra)" @("quitafter=$q") @() "client" "BAĞLANTI KOPTU" }
+Write-Host "--- Yetenekler (host botu aldığı yeteneği savaşta kullanmalı)"
+Run-Case "yetenek: Atılma" @("minigame=coins", "ab=dash") @("ab=rally") "host" "\[yetenek\] Host ability_dash"
+Run-Case "yetenek: Kalkan Patlaması" @("minigame=coins", "ab=burst") @("ab=dash") "host" "\[yetenek\] Host ability_burst"
+Run-Case "yetenek: Savaş Narası" @("minigame=coins", "ab=rally") @("ab=burst") "host" "\[yetenek\] Host ability_rally"
 Write-Host "--- Refleks hilesi (GO gelmeden 0 ms yollayan istemci)"
 $h = Start-Process $g -ArgumentList @("--headless", "--path", $root, "res://scenes/net_test.tscn", "--", "host", "players=2", "auto", "fast", "timeout=30", "minigame=reaction") -PassThru -WindowStyle Hidden -RedirectStandardOutput "$out\h.txt" -RedirectStandardError "$out\h.err"
 Start-Sleep -Seconds 2
