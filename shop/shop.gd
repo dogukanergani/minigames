@@ -52,9 +52,24 @@ func _ready() -> void:
 		for id in Net.players.keys():
 			if not order.has(id):
 				order.append(id)
+		Net.players_changed.connect(_on_roster_changed)
 		_mark_hello(1)
 	else:
 		_announce_hello()
+
+
+## Sunucu: biri ayrıldı. Sırası gelen oyuncu gittiyse 15 sn beklemeden sırayı geçir;
+## bekleyen el sıkışma varsa yeniden kontrol et.
+func _on_roster_changed() -> void:
+	if ended:
+		return
+	if not turns_started:
+		_mark_hello(1)
+		return
+	if turn_id != 0 and not Net.players.has(turn_id):
+		turn_timer.stop()
+		done[turn_id] = true
+		_next_turn()
 
 
 ## Sunucu, tüm oyuncular market sahnesini yükleyene kadar sırayı başlatmaz.
@@ -73,7 +88,7 @@ func _srv_hello() -> void:
 
 func _mark_hello(id: int) -> void:
 	hello[id] = true
-	if not turns_started and hello.size() >= Net.players.size():
+	if not turns_started and Net.all_in(hello):
 		turns_started = true
 		_next_turn()
 

@@ -15,16 +15,22 @@ const MAX_PLAYERS := 10  # 5v5
 const TEAM_SIZE := 5
 const TEAM_NAMES := ["Mavi", "Kırmızı"]
 
+## Bağlanıp kayıt mesajı göndermeyen yabancı bağlantı bu süre sonra atılır (yoksa yuva tutar).
+const REGISTER_TIMEOUT := 10.0
+
 ## peer_id -> {name: String, team: int}
 var players: Dictionary = {}
 var local_name := "Oyuncu"
 var in_game := false
+## Lobiye dönünce gösterilecek mesaj (ör. host kapandı). Lobi okuyunca temizler.
+var last_notice := ""
 
 
 func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("port="):
 			port = int(a.get_slice("=", 1))
+	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
@@ -87,6 +93,8 @@ func my_ready() -> bool:
 func start_game() -> String:
 	if not multiplayer.is_server():
 		return "Sadece host oyunu başlatabilir."
+	if in_game:
+		return "Oyun zaten başladı."
 	for t in 2:
 		if team_count(t) == 0:
 			return "Her takımda en az 1 oyuncu olmalı."
@@ -105,6 +113,24 @@ func team_count(team: int) -> int:
 	return n
 
 
+## Sunucu: maç bitince herkesin "hazır" durumunu sıfırla (host hep hazır).
+func reset_ready() -> void:
+	if not multiplayer.is_server():
+		return
+	for id in players.keys():
+		players[id].ready = (id == 1)
+	_broadcast()
+
+
+## Kayıtlı HER oyuncu `got` sözlüğünde var mı? ("herkes hazır" kontrolü).
+## Sadece sayı karşılaştırmak, oyuncu ayrılınca yanlış sonuç verir (erken başlar ya da kilitlenir).
+func all_in(got: Dictionary) -> bool:
+	for id in players.keys():
+		if not got.has(id):
+			return false
+	return not players.is_empty()
+
+
 func my_team() -> int:
 	var me: Dictionary = players.get(multiplayer.get_unique_id(), {})
 	return me.get("team", 0)
@@ -117,6 +143,8 @@ func _srv_register(player_name: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
+	if players.has(id):
+		return  # ikinci kayıt isteği mevcut oyuncuyu sıfırlamasın
 	if in_game or players.size() >= MAX_PLAYERS:
 		multiplayer.multiplayer_peer.disconnect_peer(id)
 		return
@@ -181,6 +209,15 @@ func _begin_game() -> void:
 
 # --- Bağlantı olayları ---
 
+func _on_peer_connected(id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	await get_tree().create_timer(REGISTER_TIMEOUT).timeout
+	var peer := multiplayer.multiplayer_peer
+	if peer and multiplayer.get_peers().has(id) and not players.has(id):
+		peer.disconnect_peer(id)  # kayıt olmayan yabancı bağlantı
+
+
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server() and players.erase(id):
 		_broadcast()
@@ -197,4 +234,5 @@ func _on_connection_failed() -> void:
 
 func _on_server_disconnected() -> void:
 	leave()
+	last_notice = "Bağlantı koptu (host oyundan ayrıldı)."
 	lost_connection.emit()

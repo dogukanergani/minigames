@@ -4,7 +4,23 @@ Kapsam: `scripts/net.gd`, `scripts/main.gd`, `shop/shop.gd`, `battle/battle.gd` 
 Satır numaraları incelendiği andaki (`a59b6d6`) koda aittir. **Düzeltmeyi bu rol yapmaz**, sahibine iletilmelidir.
 Durum etiketi: **[ölçüldü]** testte gözlendi · **[kod]** yalnızca kod okuyarak çıkarıldı, çalıştırılıp doğrulanmadı.
 
-Özet: 1 yüksek, 6 orta, geri kalanı düşük. Otomatik testte (1v1, 2v2, 3v3, geç katılım, geç sahne yükleme) kilitlenme yok.
+## Durum güncellemesi (yönetici)
+
+| # | Bulgu | Durum |
+|---|---|---|
+| 1 | Host kopunca istemci donar | **Düzeltildi**: `main.gd` `Net.lost_connection`'ı dinler, lobiye döner ve sebebi gösterir. Test: `tests/leave_sweep.ps1` |
+| 2 | "Herkes hazır" sayı kontrolü | **Düzeltildi**: `Net.all_in()` üyelik bazlı, roster değişince yeniden kontrol (`main`, `shop`, `battle`, `arena_base`) |
+| 3 | Anlık görüntü MTU'yu aşıyor | **Düzeltildi**: tek `PackedInt32Array`, 5v5'te ~300 bayt, uyarı yok |
+| 4 | Refleks hilesi | **Düzeltildi**: sunucu GO anını kaydeder, GO öncesi sonuç = erken basış, süre sunucu süresiyle sınırlanır. "0 ms" yollayan gerçek bir bot ise (GO'dan sonra anında basan) hâlâ ayırt edilemez |
+| 5 | Refleks erken biter | **Düzeltildi**: üyelik bazlı + roster değişince yeniden kontrol |
+| 6 | Maç bitmeyebilir | **Düzeltildi**: rakip takım kalmazsa maç biter ve oda lobisine dönülür; altın bayrak en fazla 120 sn, sonra kalan güce göre karar |
+| 7 | Market sırası takılır | **Düzeltildi**: sırası gelen ayrılırsa hemen sıra geçer |
+| 8 | Çift istek / seli | **Kısmen**: çift `_srv_register` ve çift `start_game` engellendi, bozuk (NaN) girdi atlanır, sırası bozuk girdi paketi yok sayılır. İstek hızı sınırı (rate limit) **yok** |
+| 9 | Kayıtsız bağlantı slot tutar | **Düzeltildi**: 10 sn içinde kayıt olmayan bağlantı atılır |
+| 10 | Sıfıra bölme / tek kaynak / sürüm uyuşmazlığı | **Açık**: `UNIT_ORDER` çift tanım, bağlantıda sürüm/checksum el sıkışması yok |
+| 11 | Faz akışı notları | **Açık**: maç yapısı (kaç döngü) ve `Game.reset` kararı bekliyor; geç yükleyen istemci refleks GO'sunu kaçırabilir |
+
+Özet (ilk inceleme): 1 yüksek, 6 orta, geri kalanı düşük. Otomatik testte (1v1, 2v2, 3v3, geç katılım, geç sahne yükleme) kilitlenme yok.
 
 ---
 

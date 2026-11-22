@@ -18,6 +18,7 @@ const SUMMARY_TIME := 5.0  # market özeti
 var phase: Phase = Phase.MINIGAME
 var ready_peers: Dictionary = {}
 var first_round_started := false
+var match_ended := false
 var got_phase := false  # istemci: sunucudan ilk faz mesajı geldi mi
 var current: Node  # aktif faz sahnesi (minigame / market)
 var overlay: Control
@@ -32,11 +33,47 @@ func _ready() -> void:
 	ui_theme.default_font_size = 12
 	theme = ui_theme
 	Game.reset()
+	Net.lost_connection.connect(_on_lost_connection)
 	# Herkes sahneyi yükleyince sunucu ilk turu başlatır.
 	if multiplayer.is_server():
+		Net.players_changed.connect(_on_roster_changed)
 		_mark_ready(1)
 	else:
 		_announce_ready()
+
+
+## İstemci: host kapandı / bağlantı koptu. Donup kalmak yerine lobiye dön.
+func _on_lost_connection() -> void:
+	if auto_test:
+		print("[main ", multiplayer.get_unique_id(), "] BAĞLANTI KOPTU: lobiye dönülüyor")
+		get_tree().quit(0)
+		return
+	get_tree().change_scene_to_file("res://scenes/lobby.tscn")
+
+
+## Sunucu: biri ayrıldı. Rakip takım kalmadıysa maçı bitir, yoksa bekleyen el sıkışmayı yeniden kontrol et.
+func _on_roster_changed() -> void:
+	if match_ended:
+		return
+	if Net.team_count(0) == 0 or Net.team_count(1) == 0:
+		match_ended = true
+		_end_match.rpc("Rakip takım kalmadı, maç sona erdi.")
+		return
+	_try_first_round()
+
+
+## Herkes: maç bitti, odaya (lobiye) dön. Bağlantı sürer, kalan oyuncular aynı odada kalır.
+@rpc("authority", "call_local", "reliable")
+func _end_match(reason: String) -> void:
+	if auto_test:
+		print("[main ", multiplayer.get_unique_id(), "] MAÇ BİTTİ: ", reason)
+		get_tree().quit(0)
+		return
+	Net.in_game = false
+	Net.last_notice = reason
+	if multiplayer.is_server():
+		Net.reset_ready()
+	get_tree().change_scene_to_file("res://scenes/lobby.tscn")
 
 
 ## Sunucunun Main sahnesi henüz yüklenmemişse mesaj kaybolur. Bu yüzden ilk faz
@@ -61,7 +98,12 @@ func _srv_ready() -> void:
 
 func _mark_ready(id: int) -> void:
 	ready_peers[id] = true
-	if not first_round_started and ready_peers.size() >= Net.players.size():
+	_try_first_round()
+
+
+## "Herkes hazır" kontrolü üyelik bazlı (sayı bazlı değil): biri ayrılırsa erken başlamaz, takılmaz.
+func _try_first_round() -> void:
+	if not first_round_started and Net.all_in(ready_peers):
 		first_round_started = true
 		_next_round()
 

@@ -33,6 +33,9 @@ $g = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Micros
   Start-Process $g -ArgumentList "--headless","--path",".","res://scenes/net_test.tscn","--","join","auto","fast" -RedirectStandardOutput join.txt -PassThru
   ```
   İki çıktıda da `SAVAŞ BİTTİ: kazanan=...` satırı ve hata çıktısı (`.err`) boş olmalı.
+- **Tüm regresyon:** `./tests/run_all.ps1` (5 senaryo: 1v1, 2v2, 3v3, geç katılım, geç yükleme) ve
+  `./tests/leave_sweep.ps1` (oyuncu/host oyun sırasında ayrılır, refleks hilesi). İkisi de geçmeli.
+  `.ps1` dosyaları **UTF-8 BOM'lu** kaydedilmeli (PowerShell 5.1 BOM'suz Türkçe karakterleri bozar).
 - **Kötü internet taklidi** (arkadaşsız ağ testi): `tests/netsim.py` istemci ile sunucu arasına gecikme/titreşim/paket kaybı koyar.
   Host normal çalışır (port 7777), bozucu 7778'de dinler, istemci `port=7778` argümanıyla bozucuya bağlanır:
   ```

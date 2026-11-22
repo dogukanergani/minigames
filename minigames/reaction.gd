@@ -10,6 +10,7 @@ enum State { WAIT, GO, DONE }
 const FALSE_START := -1
 const NO_ANSWER := -2
 const TIMEOUT := 3.0  # GO'dan sonra en fazla bu kadar beklenir
+const LATENCY_ALLOWANCE := 200  # ms: istemci süresi, sunucunun gördüğünden en fazla bu kadar kısa olabilir
 
 var state := State.WAIT
 var go_msec := 0
@@ -17,6 +18,7 @@ var bg: ColorRect
 var label: Label
 
 # Sadece sunucuda kullanılır
+var go_sent_msec := 0  # GO sinyalinin gönderildiği an (sunucu saati)
 var results: Dictionary = {}
 var finalized := false
 
@@ -40,7 +42,11 @@ func _ready() -> void:
 	add_child(label)
 
 	if multiplayer.is_server():
+		Net.players_changed.connect(_on_roster_changed)
 		_server_run()
+	elif "cheat" in OS.get_cmdline_user_args():
+		# Test: hilekâr istemci GO gelmeden "0 ms" sonucu yollar. Sunucu bunu erken basış saymalı.
+		get_tree().create_timer(1.5).timeout.connect(func(): _srv_result.rpc_id(1, 0))
 
 
 func _input(event: InputEvent) -> void:
@@ -77,9 +83,16 @@ func _server_run() -> void:
 	await get_tree().create_timer(1.0 + randf_range(2.0, 5.0)).timeout
 	if finalized:
 		return  # herkes erken bastı
+	go_sent_msec = Time.get_ticks_msec()
 	_go.rpc()
 	await get_tree().create_timer(TIMEOUT).timeout
 	_finalize()
+
+
+## Biri ayrıldı: kalan herkes cevap verdiyse beklemeden bitir.
+func _on_roster_changed() -> void:
+	if not finalized and Net.all_in(results):
+		_finalize()
 
 
 @rpc("any_peer", "reliable")
@@ -91,9 +104,19 @@ func _srv_result(ms: int) -> void:
 		id = 1  # host kendi çağırdı
 	if results.has(id) or not Net.players.has(id):
 		return
-	results[id] = ms
-	if results.size() >= Net.players.size():
+	results[id] = _checked_ms(ms)
+	if Net.all_in(results):
 		_finalize()
+
+
+## Süreyi istemci ölçer (ağ gecikmesinden etkilenmesin) ama sunucu sınırlar:
+## GO gönderilmeden gelen sonuç erken basıştır; sonuç, GO'dan bu yana geçen sunucu süresinden
+## uzun olamaz ve (gecikme payı kadar) fazla kısa da olamaz, "0 ms" yollayıp kazanmak olmaz.
+func _checked_ms(ms: int) -> int:
+	if ms < 0 or go_sent_msec == 0:
+		return FALSE_START
+	var elapsed := Time.get_ticks_msec() - go_sent_msec
+	return clampi(maxi(ms, elapsed - LATENCY_ALLOWANCE), 0, elapsed)
 
 
 func _finalize() -> void:

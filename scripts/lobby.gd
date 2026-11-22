@@ -20,7 +20,13 @@ func _ready() -> void:
 	Net.game_started.connect(_on_game_started)
 	Net.join_failed.connect(_show_connect.bind("Bağlanılamadı."))
 	Net.lost_connection.connect(_show_connect.bind("Bağlantı koptu."))
-	_show_connect("")
+	var notice := Net.last_notice  # oyundan döndüysek sebebini göster
+	Net.last_notice = ""
+	_show_connect(notice)
+	if not Net.players.is_empty():  # bağlantı sürüyorsa aynı odaya dön
+		_refresh()
+		if notice != "":
+			status.text = notice + "  " + status.text
 	# Geliştirici kısayolu: godot ... -- quick-host / quick-join
 	var args := OS.get_cmdline_user_args()
 	if "quick-host" in args:

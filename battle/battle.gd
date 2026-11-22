@@ -49,6 +49,7 @@ const WEAPONS := {
 	"spear": {"name": "Mızrak", "dmg": 16.0, "range": 36.0, "cd": 0.6, "ranged": false},
 	"bow": {"name": "Yay", "dmg": 12.0, "range": 0.0, "cd": 0.7, "ranged": true},
 }
+const SUDDEN_MAX := 120.0  # altın bayrak en fazla bu kadar sürer (sn)
 const ARROW_SPEED := 220.0
 const ARROW_LIFE := 0.9
 const WALL_HP := {"wall_wood": 40, "wall_stone": 100}
@@ -103,6 +104,7 @@ var scores: Array = [0, 0]
 var time_left := 0.0
 var countdown := 0.0
 var sudden := false
+var sudden_t := 0.0  # altın bayrakta geçen süre
 
 # --- İstemci durumu ---
 var snap: Dictionary = {}
@@ -167,6 +169,7 @@ func _ready() -> void:
 
 	if multiplayer.is_server():
 		multiplayer.peer_disconnected.connect(_on_peer_left)
+		Net.players_changed.connect(func(): _mark_hello(1))  # biri ayrılınca bekleyen el sıkışmayı yeniden kontrol et
 		_mark_hello(1)
 	else:
 		_announce_hello()
@@ -188,7 +191,7 @@ func _srv_hello() -> void:
 
 func _mark_hello(id: int) -> void:
 	hello[id] = true
-	if not started and hello.size() >= Net.players.size():
+	if not started and Net.all_in(hello):
 		_start()
 
 
@@ -326,6 +329,12 @@ func _sim(delta: float) -> void:
 			_time_up()
 			if over:
 				return
+	else:
+		sudden_t += delta
+		if sudden_t >= SUDDEN_MAX:  # altın bayrak sonsuza uzamasın
+			_feed.rpc("Altın bayrak süresi doldu: kalan güce göre karar verildi")
+			_finish(_sudden_winner())
+			return
 	for id in pl.keys():
 		_update_player(id, pl[id], delta)
 		if over:
@@ -343,6 +352,17 @@ func _time_up() -> void:
 		_feed.rpc("Süre doldu! Altın bayrak: ilk alan kazanır")
 	else:
 		_finish(0 if scores[0] > scores[1] else 1)
+
+
+## Altın bayrak süre sınırı dolunca: kalan kahraman + birim canı fazla olan kazanır (eşitlikte Mavi).
+func _sudden_winner() -> int:
+	var power := [0.0, 0.0]
+	for p in pl.values():
+		if p.alive:
+			power[p.team] += p.hp
+	for u in units.values():
+		power[u.team] += u.hp
+	return 1 if power[1] > power[0] else 0
 
 
 func _finish(winner: int) -> void:
@@ -820,6 +840,8 @@ func _srv_input(mv: Vector2, aim: float, atk: bool, cur: Vector2, seq: int) -> v
 	var id := multiplayer.get_remote_sender_id()
 	if id == 0:
 		id = 1
+	if not is_finite(aim) or not mv.is_finite() or not cur.is_finite():
+		return  # bozuk (NaN/Inf) girdi kahramanın nişanını kalıcı bozmasın
 	# Sunucu geç gelen / sırası bozuk paketi eskisinin üstüne yazmasın (8 bit sayaç, mod 256)
 	var old: Dictionary = inputs.get(id, {})
 	if old.has("seq") and ((seq - int(old.seq)) & 255) >= 128:

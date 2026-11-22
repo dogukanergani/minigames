@@ -37,6 +37,7 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	if multiplayer.is_server():
 		setup = _make_setup()
+		Net.players_changed.connect(func(): _srv_hello_from(1))  # biri ayrılınca bekleyen el sıkışmayı yeniden kontrol et
 		_srv_hello_from(1)
 		get_tree().create_timer(HANDSHAKE_TIMEOUT).timeout.connect(_srv_begin)
 	else:
@@ -63,7 +64,7 @@ func _srv_hello_from(id: int) -> void:
 			_start.rpc_id(id, setup)  # geç kalan oyuncuya başlangıç bilgisini tekrar yolla
 		return
 	ready_peers[id] = true
-	if ready_peers.size() >= Net.players.size():
+	if Net.all_in(ready_peers):
 		_srv_begin()
 
 

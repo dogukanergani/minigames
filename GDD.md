@@ -181,7 +181,9 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - Autoload'lar: `Net` (ağ, lobi, takımlar), `Game` (coin, tur)
 - Test: iki başsız (headless) Godot işlemiyle ağ testi (`scenes/net_test.tscn`)
 - **Ağ testi:** `tests/netsim.py` ile aynı bilgisayarda yapay gecikme/kayıp. Ping ~120-500 ms ve %3-15 kayıpta tam tur bitiyor. Gerçek internet (farklı ağlar) henüz denenmedi.
-- Bilinen teknik borç: istemci hile koruması yok (refleks sonucu istemciden geliyor), oyun sırasında host kopması / oyuncu çıkması tam işlenmiyor (bkz. `tests/BULGULAR.md`), bağlantı kurma çok kötü ağda (%15 kayıp) arada başarısız olabiliyor, ayrı sunucu modu yok, internetten oynamak için port yönlendirme/relay gerekli.
+- ✅ **Oyuncu ayrılması:** İstemci ayrılırsa kalan oyuncular devam eder; bir takım tamamen boşalırsa maç biter ve herkes aynı odanın lobisine döner. Host kapanırsa istemciler lobiye döner (sebep gösterilir). Refleks sonucu sunucuda sınırlanır, altın bayrak 120 sn ile sınırlı.
+- Bilinen teknik borç: istemci hile koruması sınırlı (istek hızı sınırı yok, "0 ms" yollayan bot ayırt edilemez), bağlantıda sürüm/checksum denetimi yok, bağlantı kurma çok kötü ağda (%15 kayıp) arada başarısız olabiliyor, ayrı sunucu modu yok, internetten oynamak için port yönlendirme/relay gerekli. Ayrıntı: `tests/BULGULAR.md`.
+- **Açık karar:** Maçın kaç döngü süreceği. Şu an tur döngüsü sonsuz, takım boşalana kadar sürer.
 
 ## 11. Yol haritası
 
