@@ -1390,8 +1390,10 @@ func _text(canvas: CanvasItem, pos: Vector2, text: String, size: int, color: Col
 
 
 func _draw() -> void:
-	var grass: Texture2D = Art.grass() if Art.available else null
-	if grass != null:  # sprite'lı zemin: çimen döşemesi (dünya x3 ölçeğinde birebir piksel)
+	var grass: Texture2D = Art.grass() if Art.available and not Art.custom else null
+	if Art.custom:  # özgün paket: pişirilmiş zemin (çimen + yol + süs)
+		Art.draw_ground(self, ARENA, OBSTACLES)
+	elif grass != null:  # sprite'lı zemin: çimen döşemesi (dünya x3 ölçeğinde birebir piksel)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2(SPR_TILE, SPR_TILE))
 		draw_texture_rect(grass, Rect2(Vector2.ZERO, ARENA.size / SPR_TILE), true)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -1401,11 +1403,15 @@ func _draw() -> void:
 		var bx := 0.0 if t == 0 else ARENA.size.x - BASE_W
 		draw_rect(Rect2(bx, 0.0, BASE_W, ARENA.size.y), _tint(TEAM_COLORS[t], 0.14))
 		var castle: Texture2D = Art.tex("buildings/%s_castle.png" % Art.TEAM_DIR[t]) if Art.available else null
-		if castle != null:  # üs: kale, bayrağın arkasında
+		if Art.custom:
+			Art.draw_castle(self, t, FLAG_HOME[t])
+		elif castle != null:  # üs: kale, bayrağın arkasında
 			var csize := Vector2(castle.get_width(), castle.get_height()) * SPR_TILE
 			draw_texture_rect(castle, Rect2(FLAG_HOME[t] - Vector2(csize.x * 0.5, csize.y * 0.72), csize), false)
 	for o in OBSTACLES:
-		if Art.available:
+		if Art.custom:
+			Art.draw_obstacle(self, o)
+		elif Art.available:
 			draw_rect(o, Color(0.33, 0.41, 0.42))
 			draw_rect(Rect2(o.position, Vector2(o.size.x, 3.0)), Color(0.5, 0.6, 0.58))
 			draw_rect(o, Color(0.12, 0.18, 0.2), false, 1.5)
@@ -1416,8 +1422,11 @@ func _draw() -> void:
 
 	for w in snap.w:
 		var wr := Rect2(w[0], w[1], WALL_SIZE, WALL_SIZE)
-		draw_rect(wr, Color(0.55, 0.4, 0.25) if w[3] <= 40.0 else Color(0.6, 0.6, 0.65))
-		draw_rect(wr, _tint(TEAM_COLORS[w[4]], 0.9), false, 1.0)
+		if Art.custom and Art.draw_wall(self, wr, w[3] > 40.0):
+			draw_rect(wr, _tint(TEAM_COLORS[w[4]], 0.9), false, 1.0)
+		else:
+			draw_rect(wr, Color(0.55, 0.4, 0.25) if w[3] <= 40.0 else Color(0.6, 0.6, 0.65))
+			draw_rect(wr, _tint(TEAM_COLORS[w[4]], 0.9), false, 1.0)
 		draw_rect(Rect2(w[0], w[1] - 3.0, WALL_SIZE * w[2] / w[3], 1.5), Color(0.3, 1.0, 0.3))
 
 	for t in 2:
@@ -1425,7 +1434,9 @@ func _draw() -> void:
 		var fp := Vector2(f[0], f[1])
 		if f[2] == 0:
 			draw_arc(fp, 8.0, 0.0, TAU, 12, _tint(TEAM_COLORS[t], 0.5), 1.0)
-		if Art.available:  # sprite'lı görünümde: tahta direk + üçgen flama (kalenin önünde okunur)
+		if Art.custom and Art.draw_flag(self, t, fp):
+			pass  # özgün bayrak çizildi
+		elif Art.available:  # sprite'lı görünümde: tahta direk + üçgen flama (kalenin önünde okunur)
 			draw_rect(Rect2(fp.x - 1.5, fp.y - 24.0, 3.0, 26.0), Color(0.3, 0.2, 0.12))
 			var flag_pts := PackedVector2Array([Vector2(fp.x + 1.5, fp.y - 24.0), Vector2(fp.x + 17.0, fp.y - 18.0), Vector2(fp.x + 1.5, fp.y - 12.0)])
 			draw_colored_polygon(flag_pts, TEAM_COLORS[t])
@@ -1461,7 +1472,9 @@ func _draw() -> void:
 			draw_rect(Rect2(upos.x - uh, bar_y, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
 
 	for pr in snap.pr:
-		if pr[3]:  # top mermisi
+		if Art.custom and Art.draw_projectile(self, Vector2(pr[0], pr[1]), pr[2], pr[3]):
+			pass
+		elif pr[3]:  # top mermisi
 			draw_circle(Vector2(pr[0], pr[1]), 2.5, Color(0.2, 0.2, 0.22))
 		else:
 			draw_rect(Rect2(pr[0] - 1.5, pr[1] - 1.5, 3.0, 3.0), Color(1.0, 0.95, 0.5))
@@ -1470,6 +1483,8 @@ func _draw() -> void:
 	snap.bm = []
 	for bv in booms_vis:
 		var k: float = bv[2] / 0.3
+		if Art.custom and Art.draw_boom(self, bv[0], bv[1], k):
+			continue
 		draw_circle(bv[0], bv[1] * (1.3 - k * 0.3), Color(1.0, 0.6, 0.2, 0.45 * k))
 
 	# Kahramanlar (büyük, belirgin, isimli)
@@ -1483,7 +1498,7 @@ func _draw() -> void:
 			continue
 		var top := 13.0  # can çubuğu ve isim için kahramanın üstündeki boşluk
 		if Art.available and _draw_hero_sprite(id, a, pos):
-			top = 27.0
+			top = Art.hero_top()
 			if id == my_id:  # kendi kahramanımın altında beyaz halka
 				draw_arc(pos + Vector2(0, 4), 12.0, 0.0, TAU, 20, Color(1, 1, 1, 0.75), 1.0)
 		else:
@@ -1522,7 +1537,7 @@ func _anim_frame(t: Texture2D, step_ms: float, phase: int) -> int:
 
 ## Birimi sprite ile çizer (hareket ediyorsa koşu, değilse bekleme; yöne göre ayna). Dosya yoksa false.
 func _draw_unit_sprite(a: Array, upos: Vector2) -> bool:
-	var sprite: String = Art.UNIT_SPRITE.get(UNIT_ORDER[a[6]], "")
+	var sprite: String = Art.unit_sprite(UNIT_ORDER[a[6]])
 	if sprite == "":
 		return false
 	var uid: int = a[0]
@@ -1530,7 +1545,7 @@ func _draw_unit_sprite(a: Array, upos: Vector2) -> bool:
 	if t == null:
 		return false
 	var flip: bool = unit_flip.get(uid, a[5] == 1)  # Mavi sağa, Kırmızı sola bakarak başlar
-	Art.draw_frame(self, t, _anim_frame(t, 110.0, uid * 3), upos + Vector2(0, 2), SPR_UNIT, flip)
+	Art.draw_frame(self, t, _anim_frame(t, 110.0, uid * 3), upos + Vector2(0, 2), Art.unit_scale(), flip, Color.WHITE, Art.get_meta_value("unit_foot"))
 	return true
 
 
@@ -1545,7 +1560,7 @@ func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
 	var t: Texture2D = null
 	var frame := 0
 	if since < 300:
-		t = Art.unit_tex(team, sprite, Art.ATTACK_ANIM.get(sprite, "idle"))
+		t = Art.unit_tex(team, sprite, Art.attack_anim(sprite))
 		if t != null:
 			frame = mini(Art.frame_count(t) - 1, int(float(since) / 300.0 * float(Art.frame_count(t))))
 	if t == null:
@@ -1557,7 +1572,7 @@ func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
 	var aim_a: float = a[7]
 	if id == my_id and not is_auto:
 		aim_a = (get_global_mouse_position() - pos).angle()
-	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), SPR_HERO, cos(aim_a) < 0.0)
+	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), Art.hero_scale(), cos(aim_a) < 0.0)
 	return true
 
 
