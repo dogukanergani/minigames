@@ -94,6 +94,9 @@ const UNIT_TYPES := {
 	"unit_shieldbearer": {"name": "Kalkancı", "hp": 140.0, "speed": 50.0, "dmg": 5.0, "range": 12.0, "cd": 0.8, "ranged": false,
 		"half": 4.0, "armor": 0.4, "taunt": true},
 }
+# Ölen birim kalıcı gitmez: sahibinin üssünde bu kadar sn sonra tam canla yeniden doğar (🧪 taslak).
+const UNIT_RESPAWN := {"unit_swordsman": 12.0, "unit_archer": 14.0, "unit_shieldbearer": 20.0,
+	"unit_artillery": 28.0, "unit_healer": 16.0}
 const SHELL_SPEED := 120.0
 const SEP_R := 9.0  # dost birimler bundan yakınsa birbirini iter
 const CMD_NAMES := ["Takip", "Saldır", "Bayrak"]
@@ -106,6 +109,7 @@ var captures_to_win := 3
 var respawn_time := 5.0
 var countdown_time := 3.0
 var speed_mul := 1.0
+var respawn_mul := 1.0  # birim yeniden doğma süresi çarpanı ("fast" testte kısalır)
 
 # --- Sunucu durumu ---
 var hello: Dictionary = {}
@@ -122,7 +126,8 @@ var stress := false
 var st_sum := 0.0
 var st_max := 0.0
 var st_n := 0
-var losses: Dictionary = {}  # peer_id -> ölen birim item id'leri
+var losses: Dictionary = {}  # eski kalıcı kayıp listesi: artık hep boş (ağ imzası için duruyor)
+var respawning: Array = []  # ölen birimler: {owner, type, slot, t} (sunucu)
 var flags: Array = []
 var projectiles: Array = []
 var walls: Array = []
@@ -201,6 +206,7 @@ func _ready() -> void:
 		respawn_time = 1.0
 		countdown_time = 1.0
 		speed_mul = 3.0
+		respawn_mul = 0.15
 	time_left = time_limit
 
 	camera = Camera2D.new()
@@ -322,13 +328,13 @@ func _spawn_units(id: int, p: Dictionary) -> void:
 		slot += 1
 
 
-func _add_unit(id: int, p: Dictionary, item_id: String, slot: int, fake: bool) -> void:
+func _add_unit(id: int, p: Dictionary, item_id: String, slot: int, fake: bool, at := Vector2.INF) -> void:
 	var t: Dictionary = UNIT_TYPES[item_id]
 	var angle := float(slot % 4) * TAU / 4.0 + 0.5
 	var ring := 22.0 + float(slot / 4) * 10.0
 	units[next_uid] = {
 		"owner": id, "team": p.team, "type": item_id, "slot": slot, "fake": fake,
-		"pos": p.pos + Vector2.from_angle(angle) * ring,
+		"pos": p.pos + Vector2.from_angle(angle) * ring if at == Vector2.INF else at,
 		"hp": t.hp, "max_hp": t.hp, "cd": 0.0, "retarget": randf() * 0.25,
 		"tkind": 0, "tid": -1, "stuck": 0.0, "side": 0.0,
 		"side_sign": 1.0 if randf() < 0.5 else -1.0,
@@ -405,8 +411,32 @@ func _sim(delta: float) -> void:
 	for uid in units.keys():
 		if units.has(uid):
 			_update_unit(uid, units[uid], delta)
+	_update_respawns(delta)
 	_update_projectiles(delta)
 	_update_flags(delta)
+
+
+## Ölen birimler: süre dolunca sahibinin üssünde (kahraman doğma bölgesi) tam canla geri gelir.
+func _update_respawns(dt: float) -> void:
+	for e in respawning.duplicate():
+		e.t -= dt
+		if e.t > 0.0:
+			continue
+		respawning.erase(e)
+		if not pl.has(e.owner):
+			continue
+		var p: Dictionary = pl[e.owner]
+		var base := _spawn_pos(p.team, p.idx)
+		var at := base
+		for k in 8:  # üs çevresinde boş bir yer bul
+			var c := base + Vector2.from_angle(randf() * TAU) * (10.0 + randf() * 18.0)
+			if not _rect_blocked(_unit_rect(c, 4.0)):
+				at = c
+				break
+		_add_unit(e.owner, p, e.type, e.slot, false, at)
+		booms.append([at.x, at.y, 10.0])
+		if is_auto:
+			print("[birim] doğdu: ", _name_of(e.owner), " ", e.type)
 
 
 func _time_up() -> void:
@@ -555,9 +585,10 @@ func _damage_unit(uid: int, amount: float) -> void:
 	u.hit_vis = HIT_VIS
 	if u.hp <= 0.0:
 		if not u.fake:
-			if not losses.has(u.owner):
-				losses[u.owner] = []
-			losses[u.owner].append(u.type)  # kalıcı kayıp
+			respawning.append({"owner": u.owner, "type": u.type, "slot": u.slot,
+				"t": UNIT_RESPAWN.get(u.type, 15.0) * respawn_mul})
+			if is_auto:
+				print("[birim] öldü: ", _name_of(u.owner), " ", u.type, " ", UNIT_RESPAWN.get(u.type, 15.0) * respawn_mul, " sn sonra doğar")
 		units.erase(uid)
 
 
@@ -902,6 +933,7 @@ func _on_peer_left(id: int) -> void:
 		for uid in units.keys():
 			if units[uid].owner == id:
 				units.erase(uid)
+		respawning = respawning.filter(func(e): return e.owner != id)
 
 
 func _name_of(id: int) -> String:
@@ -1016,6 +1048,9 @@ func _place_wall(p: Dictionary) -> void:
 
 func _make_snapshot() -> Dictionary:
 	var unit_counts := {}
+	var spawn_counts := {}
+	for e in respawning:
+		spawn_counts[e.owner] = spawn_counts.get(e.owner, 0) + 1
 	var us := []
 	for uid in units.keys():
 		var u: Dictionary = units[uid]
@@ -1029,7 +1064,7 @@ func _make_snapshot() -> Dictionary:
 		var a2: int = ABILITY_ORDER.find(p.abil[1]) + 1 if p.abil.size() > 1 else 0
 		ps[id] = [p.pos.x, p.pos.y, p.hp, p.max_hp, p.team, p.alive, p.carrying, p.aim,
 			p.weapons[p.wsel], p.atk_vis, p.respawn, p.walls.size(), p.cmd, unit_counts.get(id, 0),
-			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0, p.hit_vis > 0.0]
+			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0, p.hit_vis > 0.0, spawn_counts.get(id, 0)]
 	var fl := []
 	for f in flags:
 		fl.append([f.pos.x, f.pos.y, f.state])
@@ -1097,7 +1132,7 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 		# Yetenekler: indeks (0 = yok), bekleme (sn), kalkan ve narayla güçlenme göstergeleri
 		out.append(clampi(int(a[14]), 0, 7) | (clampi(int(a[15]), 0, 7) << 3)
 			| (clampi(int(a[16]), 0, 31) << 6) | (clampi(int(a[17]), 0, 31) << 11)
-			| (int(a[18]) << 16) | (int(a[19]) << 17))
+			| (int(a[18]) << 16) | (int(a[19]) << 17) | (clampi(int(a[21]), 0, 7) << 18))
 	for pr in s.pr:
 		out.append(_q(pr[0]) | (_q(pr[1]) << 16))
 		out.append(int(pr[2]) | (int(pr[3]) << 1) | (int(pr[4]) << 2))  # bit 2-9: yön (8 bit)
@@ -1139,7 +1174,7 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 			0.15 if ((w2 >> 27) & 1) == 1 else 0.0,
 			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63,
 			w4 & 7, (w4 >> 3) & 7, (w4 >> 6) & 31, (w4 >> 11) & 31, ((w4 >> 16) & 1) == 1, ((w4 >> 17) & 1) == 1,
-			((w2 >> 28) & 1) == 1]
+			((w2 >> 28) & 1) == 1, (w4 >> 18) & 7]
 		acks[id] = (w3 >> 22) & 255
 	snap_ack = acks
 	var prs := []
@@ -1272,8 +1307,7 @@ func _feed(text: String) -> void:
 func _battle_over(winner: int, final_scores: Array, lost: Dictionary) -> void:
 	over = true
 	camera.enabled = false  # sonuç ekranı kamerayla kaymasın
-	for id in lost.keys():
-		Game.remove_units(id, lost[id])  # ölen birimler kalıcı olarak gider
+	# Ölen birimler artık kalıcı gitmez (yeniden doğarlar): envanterden silme yok. `lost` eski imza için duruyor.
 	if is_auto and net_n > 1:
 		print("[net %d] anlık görüntü=%d  ort aralık=%.1f ms  maks=%d ms  100ms'den uzun=%d  tahmin hatası ort=%.2f maks=%.1f px (%d düzeltme)" % [
 			my_id, net_n, float(net_gap_sum) / float(net_n - 1), net_gap_max, net_late,
@@ -1282,7 +1316,7 @@ func _battle_over(winner: int, final_scores: Array, lost: Dictionary) -> void:
 		var counts := {}
 		for id in Net.players.keys():
 			counts[id] = Game.unit_count(id)
-		print("[battle] kayıplar=", lost, " kalan birim sayıları=", counts)
+		print("[battle] birim sayıları=", counts)
 	finished.emit(winner, final_scores)
 
 
@@ -1950,7 +1984,9 @@ func _draw_player_bar(me: Array) -> void:
 	_draw_slot(Rect2(232, 329, 26, 26), "wall_wood", false, "Duvar", 0.0, 0)
 	_hud_text(Vector2(262, 347), "x%d" % me[11], 12, Color.WHITE)
 	_draw_slot(Rect2(292, 329, 26, 26), "unit_swordsman", false, "Birlik", 0.0, 0)
-	_hud_text(Vector2(322, 347), "x%d" % me[13], 12, Color.WHITE)
+	_hud_text(Vector2(322, 347 if me[21] == 0 else 343), "x%d" % me[13], 12, Color.WHITE)
+	if me[21] > 0:
+		_hud_text(Vector2(322, 353), "(%d doğuyor)" % me[21], 8, UiTheme.GOLD_L)
 
 
 ## Kutu: ikon + (varsa) tuş adı; bekleme varsa üstten karartma ve kalan saniye. Hazırsa altın çerçeve.

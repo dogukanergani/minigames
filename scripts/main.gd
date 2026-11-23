@@ -238,7 +238,7 @@ func _on_battle_finished(winner: int, scores: Array) -> void:
 	if not match_over:
 		rows.append({"t": "winner", "team": winner, "text": "SAVAŞI %s TAKIM KAZANDI   (bayrak %d - %d)" % [
 			Net.TEAM_NAMES[winner].to_upper(), scores[0], scores[1]]})
-	rows.append({"t": "text", "text": "Kalan birimler (ölenler kalıcı gitti):"})
+	rows.append({"t": "text", "text": "Birlikler (ölen birimler sonraki savaşta yeniden doğar):"})
 	for id in Game.last_ranking:
 		rows.append({"t": "units", "id": id})
 	var in_test := auto_test and not full_match  # test: ilk savaştan sonra çık
