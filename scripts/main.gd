@@ -58,7 +58,7 @@ func _ready() -> void:
 ## İstemci: host kapandı / bağlantı koptu. Donup kalmak yerine lobiye dön.
 func _on_lost_connection() -> void:
 	if auto_test:
-		print("[main ", multiplayer.get_unique_id(), "] BAĞLANTI KOPTU: lobiye dönülüyor")
+		print("[main] BAĞLANTI KOPTU: lobiye dönülüyor")
 		get_tree().quit(0)
 		return
 	get_tree().change_scene_to_file("res://scenes/lobby.tscn")
@@ -81,6 +81,8 @@ func _end_match(reason: String) -> void:
 	if auto_test:
 		print("[main ", multiplayer.get_unique_id(), "] MAÇ BİTTİ: ", reason)
 		if not "keeplobby" in OS.get_cmdline_user_args():  # keeplobby: lobiye dönüşü gözle görmek için çıkma
+			# Kapanmadan önce kısa bekle: host hemen çıkarsa istemci bu mesajdan önce "bağlantı koptu" görebilir
+			await get_tree().create_timer(0.6).timeout
 			get_tree().quit(0)
 			return
 	Net.in_game = false
