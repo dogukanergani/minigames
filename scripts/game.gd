@@ -16,6 +16,8 @@ const SELL_RATE := 0.7
 const UNIT_CAP := 4
 ## Savaşta tuşla kullanılan yetenekler: kahraman en fazla bu kadarını taşır (Boşluk ve F).
 const ABILITY_CAP := 2
+## Savunma kulesi: kahraman başına en fazla bu kadar (her savaşın başında yerleştirilir).
+const TOWER_CAP := 2
 const STARTING_UNITS := ["unit_swordsman", "unit_swordsman"]
 
 var coins: Dictionary = {}  # peer_id -> int
@@ -56,6 +58,8 @@ func can_buy(id: int, item: Dictionary) -> bool:
 			return unit_count(id) < UNIT_CAP
 		"Yetenek":
 			return count_kind(id, "Yetenek") < ABILITY_CAP
+		"Kule":
+			return count_kind(id, "Kule") < TOWER_CAP
 	return true
 
 

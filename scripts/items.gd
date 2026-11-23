@@ -21,6 +21,9 @@ const ITEMS := [
 	{"id": "ability_dash", "name": "Atılma", "kind": "Yetenek", "cost": 60, "stock": 4},
 	{"id": "ability_burst", "name": "Kalkan Patlaması", "kind": "Yetenek", "cost": 80, "stock": 3},
 	{"id": "ability_rally", "name": "Savaş Narası", "kind": "Yetenek", "cost": 70, "stock": 3},
+	# Savunma kuleleri: her savaşın başında yerleştirme aşamasında kurulur. En fazla 2 tane (Game.TOWER_CAP).
+	{"id": "tower_archer", "name": "Okçu Kulesi", "kind": "Kule", "cost": 90, "stock": 4},
+	{"id": "tower_stone", "name": "Taş Kule", "kind": "Kule", "cost": 70, "stock": 3},
 ]
 
 
