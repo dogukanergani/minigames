@@ -18,7 +18,9 @@ const PACKS := {
 		"hero_top": 21.0,         # kahramanın üstündeki can çubuğu boşluğu (dünya birimi)
 		"unit_sprite": {"unit_swordsman": "u_swordsman", "unit_archer": "u_archer",
 			"unit_artillery": "u_cannon", "unit_shieldbearer": "u_shield", "unit_healer": "u_healer"},
-		"attack": {"warrior": "attack", "archer": "attack", "lancer": "attack"},
+		"attack": {"warrior": "attack", "archer": "attack", "lancer": "attack",
+			"u_swordsman": "attack", "u_archer": "attack", "u_shield": "attack", "u_cannon": "attack"},
+		"fist_attack": "punch",   # yumrukla savaşan savaşçının ayrı saldırı şeridi
 	},
 	"tinyswords": {
 		"root": "res://assets/tinyswords/",
@@ -38,6 +40,22 @@ const PACK_ORDER := ["custom", "tinyswords"]
 ## Silah -> kahramanın görünümü (yay = okçu, mızrak = mızrakçı, diğerleri = savaşçı)
 const WEAPON_SPRITE := {"fist": "warrior", "sword": "warrior", "spear": "lancer", "bow": "archer"}
 const TEAM_DIR := ["blue", "red"]
+## Saldırı animasyonu zamanlaması (ms, kare başına) ve vuruş karesi. tools/make_sprites.py ATK_MS ile AYNI.
+## Anahtar: kahramanda silah (sword/spear/bow/fist), birimde sprite adı (u_*). Vuruş ~%45'te: tepkisel his.
+const ATK_MS := {
+	"sword": [55, 45, 35, 45, 60, 70], "fist": [60, 45, 60, 75],
+	"spear": [60, 60, 35, 55, 60, 70], "bow": [50, 45, 60, 70, 80, 90],
+	"u_swordsman": [70, 40, 60, 80], "u_archer": [60, 60, 80, 90],
+	"u_shield": [70, 50, 70, 80], "u_cannon": [90, 70, 90, 110, 120],
+}
+const ATK_DEFAULT_MS := 300.0  # tabloda olmayan (Tiny Swords) şeritler bu sürede eşit oynar
+## Mızrak katmanı: ön elin karakter ortasından ileri uzaklığı (dünya birimi, kare başına; make_sprites SPEAR_GRIP x 2/3)
+const SPEAR_GRIP := [-2.0, -4.0, 6.0, 8.667, 7.333, 3.333]
+## Efekt şeritleri: [kare genişliği, pivot] (make_sprites.py SLASH / THRUST_* / SPEAR_*)
+const FX := {
+	"slash": [96, Vector2(48, 48)], "thrust": [64, Vector2(12, 10)], "spark": [16, Vector2(8, 8)],
+	"puff": [24, Vector2(12, 12)], "spear": [60, Vector2(18, 5)],
+}
 
 var available := false        # herhangi bir sprite paketi var mı
 var custom := false           # özgün paket mi
@@ -99,6 +117,92 @@ func unit_sprite(item_id: String) -> String:
 
 func attack_anim(sprite: String) -> String:
 	return _meta.get("attack", {}).get(sprite, "idle")
+
+
+## Bu sprite'ın saldırı şeridi var mı (Şifacı gibi saldırmayanlarda yok).
+func has_attack(sprite: String) -> bool:
+	return _meta.get("attack", {}).has(sprite)
+
+
+## Kahramanın saldırı şeridi: silaha göre (özgün pakette yumruk ayrı şerit).
+func hero_attack_anim(sprite: String, weapon: String) -> String:
+	if weapon == "fist" and _meta.has("fist_attack"):
+		return _meta.fist_attack
+	return attack_anim(sprite)
+
+
+## Saldırının toplam süresi (ms).
+func attack_len(key: String) -> float:
+	var ms: Array = ATK_MS.get(key, [])
+	if ms.is_empty():
+		return ATK_DEFAULT_MS
+	var total := 0.0
+	for v in ms:
+		total += float(v)
+	return total
+
+
+## Zaman tablosuna göre saldırı evresi (kare indeksi), pakete bağlı değil. Bitti ise -1.
+func atk_phase(key: String, since: float) -> int:
+	var ms: Array = ATK_MS.get(key, [])
+	if ms.is_empty():
+		return -1 if since >= ATK_DEFAULT_MS else int(since / ATK_DEFAULT_MS * 6.0)
+	var acc := 0.0
+	for i in ms.size():
+		acc += float(ms[i])
+		if since < acc:
+			return i
+	return -1
+
+
+## Saldırı şeridinin gösterilecek karesi. Kare sayısı tabloyla uyuşmazsa (Tiny Swords) eşit dağıtılır. Bitti ise -1.
+func attack_frame(t: Texture2D, key: String, since: float) -> int:
+	var n := frame_count(t)
+	if custom and (ATK_MS.get(key, []) as Array).size() == n:
+		return atk_phase(key, since)
+	if since >= ATK_DEFAULT_MS:
+		return -1
+	return mini(n - 1, int(since / ATK_DEFAULT_MS * float(n)))
+
+
+## Saldırı kareleri büyük tuvalde (kahraman 48, birim 36): ayak oranı tuvale göre yeniden hesaplanır.
+func foot_for(t: Texture2D, base_px: float, base_frac: float) -> float:
+	var h := float(t.get_height())
+	if not custom or h <= base_px:
+		return base_frac
+	return (base_frac * base_px + (h - base_px) * 0.5) / h
+
+
+## Dokunun beyaz silueti (vurulma parlaması için, önbellekli).
+func white(t: Texture2D) -> Texture2D:
+	var key := "white#%d" % t.get_instance_id()
+	if _cache.has(key):
+		return _cache[key]
+	var img := t.get_image()
+	img.convert(Image.FORMAT_RGBA8)
+	for y in img.get_height():
+		for x in img.get_width():
+			var a := img.get_pixel(x, y).a
+			if a > 0.0:
+				img.set_pixel(x, y, Color(1, 1, 1, a))
+	var w := ImageTexture.create_from_image(img)
+	_cache[key] = w
+	return w
+
+
+## Saldırı efekti: fx/<ad>.png şeridinin `frame`. karesi, pivotu `pos`ta, `angle` açısıyla döndürülmüş.
+## `flip_v`: sola nişanda dikey ayna (savuruş yönü sprite'ın aynasıyla aynı kalsın). Doku yoksa false.
+func draw_fx(canvas: CanvasItem, fx_name: String, frame: int, pos: Vector2, angle: float, flip_v: bool, tint := Color.WHITE, path := "") -> bool:
+	var t := tex(path if path != "" else "fx/%s.png" % fx_name)
+	if t == null or not FX.has(fx_name):
+		return false
+	var fw: int = FX[fx_name][0]
+	var pivot: Vector2 = FX[fx_name][1]
+	var s := world_scale()
+	canvas.draw_set_transform(pos, angle, Vector2(s, -s if flip_v else s))
+	canvas.draw_texture_rect_region(t, Rect2(-pivot, Vector2(fw, t.get_height())), Rect2(frame * fw, 0, fw, t.get_height()), tint)
+	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	return true
 
 
 func hero_scale() -> float:
