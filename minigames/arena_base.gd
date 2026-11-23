@@ -7,6 +7,8 @@ extends Control
 
 signal finished(ranking: Array, labels: Dictionary)
 
+const MgArt = preload("res://minigames/mg_art.gd")
+
 enum Phase { LOADING, COUNTDOWN, PLAY, DONE }
 
 const SCREEN := Vector2(640, 360)
@@ -32,9 +34,23 @@ var time_left := 0.0
 var elapsed := 0.0
 var tick := 0
 
+# Sadece görünüm (herkeste, oyun mantığını etkilemez)
+var fancy := false  # sprite'lı görünüm (MgArt.ok()); yoksa eski düz çizim
+var moving: Dictionary = {}  # id -> koşuyor mu
+var move_at: Dictionary = {}  # id -> son hareket anı (ms)
+var face: Dictionary = {}  # id -> sola bakıyor mu
+var last_target: Dictionary = {}
+var dust: Array = []  # [konum, doğduğu an (ms)]
+var dust_acc: Dictionary = {}
+var shown_ph := -1
+var ph_at := 0  # aşamanın değiştiği an (ms)
+var shown_cd := -1
+var cd_at := 0
+
 
 func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	fancy = MgArt.ok()
 	if multiplayer.is_server():
 		setup = _make_setup()
 		Net.players_changed.connect(func(): _srv_hello_from(1))  # biri ayrılınca bekleyen el sıkışmayı yeniden kontrol et
@@ -201,14 +217,48 @@ func _clean(mv: Vector2) -> Vector2:
 
 func _process(delta: float) -> void:
 	var p: Dictionary = snap.get("p", {})
+	var now := Time.get_ticks_msec()
 	for id in p:
 		var target: Vector2 = p[id]
 		var cur: Vector2 = disp.get(id, target)
 		disp[id] = cur.lerp(target, minf(1.0, delta * 20.0))
+		if fancy:  # koşu animasyonu, bakış yönü ve toz (yalnızca görünüm)
+			var step: Vector2 = target - last_target.get(id, target)
+			last_target[id] = target
+			if (target - cur).length() > 0.6 or step.length() > 0.1:
+				move_at[id] = now
+			var mv: bool = now - int(move_at.get(id, -1000)) < 160  # anlık görüntü aralarında titremesin
+			moving[id] = mv
+			if absf(target.x - cur.x) > 0.4:
+				face[id] = target.x < cur.x
+			if mv:
+				dust_acc[id] = float(dust_acc.get(id, 0.0)) + delta
+				if dust_acc[id] > 0.09:
+					dust_acc[id] = 0.0
+					var back := 5.0 if not face.get(id, false) else -5.0
+					dust.append([cur + Vector2(-back, 3.0), now])
+	if fancy:
+		while not dust.is_empty() and now - int(dust[0][1]) > 360:
+			dust.pop_front()
+		var ph: int = int(snap.get("ph", -1))
+		if ph != shown_ph:
+			shown_ph = ph
+			ph_at = now
+		var n := ceili(float(snap.get("cd", 0.0)))
+		if n != shown_cd:
+			shown_cd = n
+			cd_at = now
 	queue_redraw()
 
 
+func _since(t: int) -> float:
+	return float(Time.get_ticks_msec() - t) / 1000.0
+
+
 func _draw() -> void:
+	if fancy:
+		_draw_fancy()
+		return
 	_draw_world()
 	var font := ThemeDB.fallback_font
 	draw_string(font, Vector2(6, 12), _title(), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color.WHITE)
@@ -244,6 +294,58 @@ func _draw_player(id: int, p: Vector2) -> void:
 	var font := ThemeDB.fallback_font
 	var nm: String = Net.players.get(id, {}).get("name", "?")
 	draw_string(font, Vector2(p.x - 30, p.y - 8).round(), nm, HORIZONTAL_ALIGNMENT_CENTER, 60, 8, Color(1, 1, 1, 0.9))
+
+
+## Sprite'lı görünüm: dünya (alt sınıf) -> üst band ve HUD -> geri sayım / BAŞLA / BİTTİ.
+func _draw_fancy() -> void:
+	_draw_world()
+	if snap.is_empty():
+		MgArt.band(self, _title(), -1.0)
+		MgArt.text(self, "HAZIRLANIYOR...", Vector2(320, 180), MgArt.PX * 2.0, Color(0.93, 0.92, 0.97))
+		return
+	var ph: int = int(snap.ph)
+	var tl: float = float(snap.tl)
+	if ph == Phase.PLAY:
+		MgArt.urgent_vignette(self, tl)
+	MgArt.band(self, _title(), tl if ph != Phase.LOADING else -1.0)
+	_draw_hud()
+	if ph == Phase.COUNTDOWN:
+		MgArt.countdown(self, maxi(1, ceili(float(snap.cd))), _since(cd_at), _hint())
+	elif ph == Phase.PLAY:
+		MgArt.shout(self, "BAŞLA!", _since(ph_at) / 0.9, Color(0.55, 1.0, 0.45))
+	elif ph == Phase.DONE:
+		MgArt.shout(self, "BİTTİ!", minf(_since(ph_at) / 2.0, 0.6), Color(1.0, 0.9, 0.51))
+
+
+## Oyuncuları ve `extra` nesneleri ([sıralama y'si, Callable]) ayak hizasına göre (önden arkaya) çizer.
+## Önce koşu tozu (altta kalsın).
+func _draw_actors(extra: Array = []) -> void:
+	var now := Time.get_ticks_msec()
+	var dt := MgArt.tex("dust")
+	for d in dust:
+		var k := float(now - int(d[1])) / 360.0
+		MgArt.frame(self, dt, clampi(int(k * 4.0), 0, 3), 10, d[0] + Vector2(0, -k * 3.0), MgArt.PX, Color(1, 1, 1, 0.9))
+	var items: Array = extra.duplicate()
+	for id in disp:
+		items.append([disp[id].y + 4.0, _draw_actor.bind(id, disp[id])])
+	items.sort_custom(func(a, b): return a[0] < b[0])
+	for it in items:
+		(it[1] as Callable).call()
+
+
+## Tek oyuncu: ayak halkası, Savaşçı sprite'ı (koşu/bekleme, yöne göre ayna), isim, taç/ok ve alt sınıfın başüstü eki.
+func _draw_actor(id: int, p: Vector2) -> void:
+	var team: int = Net.players.get(id, {}).get("team", 0)
+	var mine := id == multiplayer.get_unique_id()
+	MgArt.ring(self, p, team, mine)
+	var anim := "run" if moving.get(id, false) else "idle"
+	if not MgArt.hero(self, team, anim, p + Vector2(0, 4), face.get(id, false)):
+		draw_rect(Rect2((p - Vector2(5, 5)).round(), Vector2(10, 10)), MgArt.team_col(team))
+	var top := Art.hero_top() + 2.0
+	var nm: String = Net.players.get(id, {}).get("name", "?")
+	MgArt.small(self, nm, p + Vector2(0, -top + 3.0), 8, Color(1.0, 0.92, 0.6) if mine else Color(1, 1, 1, 0.92))
+	MgArt.marker(self, p + Vector2(0, -top - 6.0), team, mine)
+	_above_head(id, p, top)
 
 
 func _my_pos() -> Vector2:
@@ -286,7 +388,13 @@ func _extra_snap() -> Dictionary:  # sunucu, anlık görüntüye eklenecekler
 func _compute_result() -> Array:  # sunucu: [sıralama, etiketler]
 	return [[], {}]
 
-func _draw_world() -> void:
+func _draw_world() -> void:  # `fancy` ise sprite'lı dünya + _draw_actors(), değilse eski düz çizim
+	pass
+
+func _draw_hud() -> void:  # sprite'lı görünüm: bandın ortası / skor tablosu
+	pass
+
+func _above_head(_id: int, _p: Vector2, _top: float) -> void:  # sprite'lı görünüm: oyuncunun başı üstü eki
 	pass
 
 func _bot_input() -> Vector2:  # test botu
