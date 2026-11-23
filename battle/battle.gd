@@ -82,6 +82,20 @@ const ARROW_LIFE := 0.9
 const WALL_HP := {"wall_wood": 40, "wall_stone": 100}
 const SHIELD := {"shield_wood": 0.15, "shield_iron": 0.30}
 
+# Savunma kuleleri (markette "Kule", item id'leriyle aynı). 🧪 sayılar taslak.
+const TOWER_ORDER := ["tower_archer", "tower_stone"]  # anlık görüntüde kısa indeks
+const TOWER_TYPES := {
+	"tower_archer": {"name": "Okçu Kulesi", "hp": 160.0, "range": 120.0, "dmg": 9.0, "cd": 0.8},
+	"tower_stone": {"name": "Taş Kule", "hp": 320.0, "range": 90.0, "dmg": 6.0, "cd": 1.0},
+}
+const TOWER_SIZE := 16.0  # çarpışma kutusu
+const TOWER_HALF := 8.0
+const TOWER_MIN_DIST := 40.0  # kuleler arası en az mesafe
+const PLACE_LANE := 28.0  # orta şerit (y=360 çevresi) açık kalır: bayrak yolu kapanmasın
+const PLACE_FLAG_DIST := 40.0  # bayrak çevresinden en az mesafe
+const PLACE_ZONE := 0.4  # kendi tarafının ilk %40'ı (üs şeridi BASE_W hariç)
+const PLACEMENT_TIME := 15.0  # her savaşın başında kule yerleştirme süresi (sn)
+
 # Birim türleri (item id'leri ile aynı). UNIT_ORDER: anlık görüntüde kısa indeks.
 const UNIT_ORDER := ["unit_swordsman", "unit_archer", "unit_artillery", "unit_shieldbearer"]
 # Ek alanlar: half = çarpışma/çizim yarı boyutu, aoe = alan hasarı yarıçapı, wmul = duvar hasar çarpanı,
@@ -109,6 +123,7 @@ var captures_to_win := 3
 var respawn_time := 5.0
 var countdown_time := 3.0
 var speed_mul := 1.0
+var placement_time := PLACEMENT_TIME
 var respawn_mul := 1.0  # birim yeniden doğma süresi çarpanı ("fast" testte kısalır)
 
 # --- Sunucu durumu ---
@@ -131,6 +146,10 @@ var respawning: Array = []  # ölen birimler: {owner, type, slot, t} (sunucu)
 var flags: Array = []
 var projectiles: Array = []
 var walls: Array = []
+var towers: Array = []  # yerleştirilmiş kuleler (sunucu): {id, owner, team, slot, type, pos, rect, hp, cd, ...}
+var next_tid := 1
+var pack_max := 0  # en büyük anlık görüntü paketi (bayt), test çıktısı için
+var placing := 0.0  # > 0 iken yerleştirme aşaması sürüyor (sunucu)
 var inputs: Dictionary = {}
 var scores: Array = [0, 0]
 var time_left := 0.0
@@ -167,6 +186,10 @@ var camera: Camera2D
 var hud: Control
 var bot_kill_done := false
 var bot_cmd_sent := false
+var bot_tw_done := false
+var bot_tw_hit := false
+var tw_sel := -1  # istemci: yerleştirmek üzere seçili kule (kendi kule sıram), -1 = yok
+var tw_init := false
 var bot_ab_last := [0, 0]  # botun yetenekleri son kullandığı an (ms)
 var is_auto := false
 
@@ -205,6 +228,7 @@ func _ready() -> void:
 		captures_to_win = 1
 		respawn_time = 1.0
 		countdown_time = 1.0
+		placement_time = 10.0
 		speed_mul = 3.0
 		respawn_mul = 0.15
 	time_left = time_limit
@@ -264,6 +288,9 @@ func _start() -> void:
 		if stress:
 			_spawn_stress(id, pl[id])
 	flags = [_new_flag(0), _new_flag(1)]
+	for q in pl.values():  # kulesi olan varsa önce yerleştirme aşaması (yoksa atlanır)
+		if not q.tw.is_empty():
+			placing = placement_time
 	countdown = countdown_time
 	time_left = time_limit
 	started = true
@@ -306,6 +333,15 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 	for item in inv:
 		if ABILITIES.has(item) and abil.size() < 2:
 			abil.append(item)
+	var tw: Array = []  # sahip olunan kuleler (yerleştirme aşamasında kurulur)
+	for item in inv:
+		if TOWER_TYPES.has(item) and tw.size() < Game.TOWER_CAP:
+			tw.append(item)
+	for a in OS.get_cmdline_user_args():  # test: `givetw=archer,stone` herkese bu kuleleri bedava verir (markete bakmadan)
+		if a.begins_with("givetw="):
+			for k in a.substr(7).split(","):
+				if TOWER_TYPES.has("tower_" + k) and tw.size() < Game.TOWER_CAP:
+					tw.append("tower_" + k)
 	var max_hp: int = BASE_HP + (40 if inv.has("heart") else 0)
 	var spd: float = BASE_SPEED * (1.2 if inv.has("boots") else 1.0) * speed_mul
 	var pos := _spawn_pos(team, idx)
@@ -314,7 +350,7 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 		"hp": max_hp, "max_hp": max_hp, "alive": true, "respawn": 0.0, "carrying": -1,
 		"aim": 0.0 if team == 0 else PI, "cd": 0.0, "atk_vis": 0.0, "hit_vis": 0.0,
 		"weapons": weapons, "wsel": wsel_i, "armor": armor, "speed": spd, "walls": wall_list,
-		"cmd": 0,
+		"cmd": 0, "tw": tw, "tw_ready": false,
 		"abil": abil, "ab_cd": [0.0, 0.0], "shield_t": 0.0, "rally_t": 0.0,
 	}
 
@@ -368,8 +404,11 @@ func _physics_process(delta: float) -> void:
 		tick += 1
 		if tick % 2 == 0:
 			snap = _make_snapshot()
-			_snapshot.rpc(_pack_snapshot(snap))
-			_snapshot_units.rpc(_pack_units())
+			var pk := _pack_snapshot(snap)
+			var pku := _pack_units()
+			pack_max = maxi(pack_max, maxi(pk.size(), pku.size()) * 4)
+			_snapshot.rpc(pk)
+			_snapshot_units.rpc(pku)
 		if stress:
 			var ms := float(Time.get_ticks_usec() - t0) / 1000.0
 			st_sum += ms
@@ -388,6 +427,10 @@ func _physics_process(delta: float) -> void:
 
 
 func _sim(delta: float) -> void:
+	if placing > 0.0:
+		placing -= delta
+		_placement_step(delta)
+		return
 	if countdown > 0.0:
 		countdown -= delta
 		return
@@ -412,6 +455,7 @@ func _sim(delta: float) -> void:
 		if units.has(uid):
 			_update_unit(uid, units[uid], delta)
 	_update_respawns(delta)
+	_update_towers(delta)
 	_update_projectiles(delta)
 	_update_flags(delta)
 
@@ -514,6 +558,9 @@ func _rect_blocked(r: Rect2) -> bool:
 	for w in walls:
 		if w.rect.intersects(r):
 			return true
+	for tw in towers:
+		if tw.rect.intersects(r):
+			return true
 	return false
 
 
@@ -556,6 +603,12 @@ func _attack(id: int, p: Dictionary) -> void:
 		var wd: Vector2 = wall.rect.get_center() - p.pos
 		if wd.length() <= reach + WALL_SIZE * 0.5 and _in_arc(wd, p.aim):
 			_damage_wall(wall, w.dmg)
+	for tw in towers.duplicate():
+		if tw.team == p.team:
+			continue
+		var td: Vector2 = tw.pos - p.pos
+		if td.length() <= reach + TOWER_HALF and _in_arc(td, p.aim):
+			_damage_tower(tw, w.dmg)
 
 
 func _in_arc(delta: Vector2, aim: float) -> bool:
@@ -621,6 +674,12 @@ func _update_projectiles(dt: float) -> void:
 					hit = true
 					break
 		if not hit:
+			for tw in towers.duplicate():
+				if tw.team != pr.team and tw.rect.has_point(pr.pos):  # dost okları kendi kulesinin üstünden geçer
+					_damage_tower(tw, pr.dmg)
+					hit = true
+					break
+		if not hit:
 			for eid in pl.keys():
 				var e: Dictionary = pl[eid]
 				if e.team != pr.team and e.alive and _player_rect(e.pos).grow(1.5).has_point(pr.pos):
@@ -652,6 +711,9 @@ func _explode(pr: Dictionary) -> void:
 	for wall in walls.duplicate():
 		if wall.team != pr.team and wall.rect.get_center().distance_to(pr.pos) <= r + WALL_SIZE * 0.5:
 			_damage_wall(wall, pr.dmg * pr.wmul)
+	for tw in towers.duplicate():
+		if tw.team != pr.team and tw.pos.distance_to(pr.pos) <= r + TOWER_HALF:
+			_damage_tower(tw, pr.dmg * pr.wmul)
 	booms.append([pr.pos.x, pr.pos.y, r])
 
 
@@ -683,7 +745,7 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 		var tp: Vector2 = _target_pos(u)
 		if cmd == 0 and tp.distance_to(owner_p.pos) > UNIT_LEASH * 1.4 + t.range * 0.5:
 			u.tkind = 0  # Takip modunda çok uzağa kovalamaz
-		elif u.pos.distance_to(tp) <= t.range:
+		elif u.pos.distance_to(tp) <= t.range + (TOWER_HALF if u.tkind == 4 else 0.0):
 			_unit_attack(u, t, tp)
 			_unit_move(u, u.sep * spd * 0.3 * dt)  # dururken de üst üste yığılma
 			return
@@ -740,6 +802,8 @@ func _target_valid(u: Dictionary) -> bool:
 		return pl.has(u.tid) and pl[u.tid].alive
 	if u.tkind == 3:
 		return not _find_wall(u.tid).is_empty()
+	if u.tkind == 4:
+		return not _find_tower(u.tid).is_empty()
 	return units.has(u.tid)
 
 
@@ -748,6 +812,8 @@ func _target_pos(u: Dictionary) -> Vector2:
 		return pl[u.tid].pos
 	if u.tkind == 3:
 		return _find_wall(u.tid).rect.get_center()
+	if u.tkind == 4:
+		return _find_tower(u.tid).pos
 	return units[u.tid].pos
 
 
@@ -796,6 +862,15 @@ func _unit_retarget(u: Dictionary, t: Dictionary, owner_p: Dictionary, cmd: int)
 				best = d3
 				kind = 3
 				tid = w.id
+	if kind == 0:  # başka hedef yoksa yakındaki düşman kuleye saldır
+		for tw in towers:
+			if tw.team == u.team:
+				continue
+			var d4: float = u.pos.distance_to(tw.pos)
+			if d4 < best and d4 <= radius and (not leash or tw.pos.distance_to(owner_p.pos) <= UNIT_LEASH):
+				best = d4
+				kind = 4
+				tid = tw.id
 	u.tkind = kind
 	u.tid = tid
 
@@ -820,6 +895,8 @@ func _unit_attack(u: Dictionary, t: Dictionary, tp: Vector2) -> void:
 			"life": t.range / speed + 0.15, "by": u.owner})
 	elif u.tkind == 1:
 		_damage(u.tid, dmg, u.owner)
+	elif u.tkind == 4:
+		_damage_tower(_find_tower(u.tid), dmg)
 	else:
 		_damage_unit(u.tid, dmg)
 
@@ -934,6 +1011,7 @@ func _on_peer_left(id: int) -> void:
 			if units[uid].owner == id:
 				units.erase(uid)
 		respawning = respawning.filter(func(e): return e.owner != id)
+		towers = towers.filter(func(t): return t.owner != id)
 
 
 func _name_of(id: int) -> String:
@@ -1044,6 +1122,225 @@ func _place_wall(p: Dictionary) -> void:
 	next_wid += 1
 
 
+# --- Savunma kuleleri ---
+
+func _tower_rect(c: Vector2) -> Rect2:
+	return Rect2(c - Vector2(TOWER_HALF, TOWER_HALF), Vector2(TOWER_SIZE, TOWER_SIZE))
+
+
+## Takımın kule yerleştirme bölgesinin x aralığı (x = en küçük, y = en büyük): kendi tarafının ilk %40'ı, üs şeridi hariç.
+func _zone_x(team: int) -> Vector2:
+	if team == 0:
+		return Vector2(BASE_W, ARENA.size.x * PLACE_ZONE)
+	return Vector2(ARENA.size.x * (1.0 - PLACE_ZONE), ARENA.size.x - BASE_W)
+
+
+## Sunucu ve istemcinin (hayalet rengi) ortak kuralı: bölge, sabit engeller, bayrak ve diğer kulelere uzaklık.
+func _tower_spot_ok(team: int, c: Vector2, others: Array) -> bool:
+	var r := _tower_rect(c)
+	var zx := _zone_x(team)
+	if r.position.x < zx.x or r.end.x > zx.y or r.position.y < 0.0 or r.end.y > ARENA.size.y:
+		return false
+	for o in OBSTACLES:
+		if o.intersects(r):
+			return false
+	if absf(c.y - FLAG_HOME[0].y) < PLACE_LANE:
+		return false
+	for t in 2:
+		if c.distance_to(FLAG_HOME[t]) < PLACE_FLAG_DIST:
+			return false
+	for q in others:
+		if q.distance_to(c) < TOWER_MIN_DIST:
+			return false
+	return true
+
+
+func _find_tower(tid: int) -> Dictionary:
+	for tw in towers:
+		if tw.id == tid:
+			return tw
+	return {}
+
+
+func _tower_of(owner: int, slot: int) -> Dictionary:
+	for tw in towers:
+		if tw.owner == owner and tw.slot == slot:
+			return tw
+	return {}
+
+
+## Kuleyi yerleştirir ya da (zaten varsa) taşır. Geçersizse false.
+func _put_tower(id: int, p: Dictionary, slot: int, c: Vector2) -> bool:
+	var old: Dictionary = _tower_of(id, slot)
+	var others: Array = []
+	for tw in towers:
+		if tw != old:
+			others.append(tw.pos)
+	if not _tower_spot_ok(p.team, c, others):
+		return false
+	var r := _tower_rect(c)
+	for w in walls:
+		if w.rect.intersects(r):
+			return false
+	for q in pl.values():
+		if q.alive and _player_rect(q.pos).intersects(r):
+			return false
+	for u in units.values():
+		if _unit_rect(u.pos, u.half).intersects(r):
+			return false
+	if old.is_empty():
+		var tt: Dictionary = TOWER_TYPES[p.tw[slot]]
+		towers.append({"id": next_tid, "owner": id, "team": p.team, "slot": slot, "type": p.tw[slot],
+			"pos": c, "rect": r, "hp": tt.hp, "max": tt.hp, "cd": 0.5, "retarget": randf() * 0.25,
+			"tkind": 0, "tid": -1, "atk_vis": 0.0, "hit_vis": 0.0, "fired": false})
+		next_tid += 1
+		if is_auto:
+			print("[kule] yerleştirildi: ", _name_of(id), " ", p.tw[slot], " ", c)
+	else:
+		old.pos = c
+		old.rect = r
+		if is_auto:
+			print("[kule] taşındı: ", _name_of(id), " ", p.tw[slot], " ", c)
+	return true
+
+
+@rpc("any_peer", "reliable")
+func _srv_place_tower(slot: int, pos: Vector2) -> void:
+	if not multiplayer.is_server() or over or placing <= 0.0:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	if id == 0:
+		id = 1
+	if not pl.has(id) or not pos.is_finite():
+		return
+	var p: Dictionary = pl[id]
+	if slot < 0 or slot >= p.tw.size():
+		return
+	_put_tower(id, p, slot, pos)
+
+
+@rpc("any_peer", "reliable")
+func _srv_ready_placement() -> void:
+	if not multiplayer.is_server() or over or placing <= 0.0:
+		return
+	var id := multiplayer.get_remote_sender_id()
+	if id == 0:
+		id = 1
+	if pl.has(id):
+		pl[id].tw_ready = true
+
+
+## Yerleştirilmemiş kuleyi kendi bölgesinde, bayrağa en yakın geçerli boş yere koyar.
+func _auto_place(id: int, p: Dictionary, slot: int) -> void:
+	var zx := _zone_x(p.team)
+	var cands: Array = []
+	var x := zx.x + 14.0
+	while x < zx.y - 8.0:
+		var y := 24.0
+		while y < ARENA.size.y - 16.0:
+			cands.append(Vector2(x, y))
+			y += 24.0
+		x += 20.0
+	var home: Vector2 = FLAG_HOME[p.team]
+	cands.sort_custom(func(a, b): return a.distance_to(home) < b.distance_to(home))
+	for c in cands:
+		if _put_tower(id, p, slot, c):
+			return
+
+
+func _end_placement() -> void:
+	for id in pl.keys():
+		var p: Dictionary = pl[id]
+		for slot in p.tw.size():
+			if _tower_of(id, slot).is_empty():
+				_auto_place(id, p, slot)
+	placing = 0.0
+	if is_auto:
+		print("[kule] yerleştirme bitti: ", towers.size(), " kule")
+
+
+## Yerleştirme aşaması: kahramanlar hareket eder (saldıramaz, hasar almaz), süre / hazır bitince savaş geri sayımına geçilir.
+func _placement_step(dt: float) -> void:
+	var all_ready := true
+	for id in pl.keys():
+		var p: Dictionary = pl[id]
+		var inp: Dictionary = inputs.get(id, {})
+		var mv: Vector2 = inp.get("mv", Vector2.ZERO)
+		if p.alive:
+			_move(p, mv.limit_length(1.0) * p.speed * dt)
+		p.aim = inp.get("aim", p.aim)
+		p.cur = inp.get("cur", p.cur)
+		if not p.tw.is_empty() and not p.tw_ready:
+			all_ready = false
+	if all_ready or placing <= 0.0:
+		_end_placement()
+
+
+func _update_towers(dt: float) -> void:
+	for tw in towers:
+		var tt: Dictionary = TOWER_TYPES[tw.type]
+		tw.cd = maxf(0.0, tw.cd - dt)
+		tw.atk_vis = maxf(0.0, tw.atk_vis - dt)
+		tw.hit_vis = maxf(0.0, tw.hit_vis - dt)
+		tw.retarget -= dt
+		if tw.retarget <= 0.0:  # menzildeki en yakın düşman kahraman / birim
+			tw.retarget = 0.25
+			tw.tkind = 0
+			tw.tid = -1
+			var best: float = tt.range
+			for hid in pl.keys():
+				var h: Dictionary = pl[hid]
+				if h.team == tw.team or not h.alive:
+					continue
+				var d: float = tw.pos.distance_to(h.pos)
+				if d <= best:
+					best = d
+					tw.tkind = 1
+					tw.tid = hid
+			for uid in units.keys():
+				var u: Dictionary = units[uid]
+				if u.team == tw.team:
+					continue
+				var d2: float = tw.pos.distance_to(u.pos)
+				if d2 <= best:
+					best = d2
+					tw.tkind = 2
+					tw.tid = uid
+		if tw.tkind == 0 or tw.cd > 0.0:
+			continue
+		var tp: Vector2
+		if tw.tkind == 1 and pl.has(tw.tid) and pl[tw.tid].alive:
+			tp = pl[tw.tid].pos
+		elif tw.tkind == 2 and units.has(tw.tid):
+			tp = units[tw.tid].pos
+		else:
+			tw.tkind = 0
+			continue
+		if tw.pos.distance_to(tp) > tt.range + 10.0:
+			tw.tkind = 0
+			continue
+		var dir: Vector2 = (tp - tw.pos).normalized()
+		projectiles.append({"pos": tw.pos + dir * (TOWER_HALF + 2.0), "vel": dir * ARROW_SPEED, "team": tw.team,
+			"dmg": tt.dmg, "life": tt.range / ARROW_SPEED + 0.1, "by": tw.owner})
+		tw.cd = tt.cd
+		tw.atk_vis = ATK_VIS
+		if is_auto and not tw.fired:
+			print("[kule] ateş: ", _name_of(tw.owner), " ", tw.type)
+		tw.fired = true
+
+
+func _damage_tower(tw: Dictionary, amount: float) -> void:
+	if tw.is_empty() or not towers.has(tw):
+		return
+	tw.hp -= amount
+	tw.hit_vis = HIT_VIS
+	if tw.hp <= 0.0:
+		towers.erase(tw)
+		booms.append([tw.pos.x, tw.pos.y, 16.0])
+		if is_auto:
+			print("[kule] yıkıldı: ", _name_of(tw.owner), " ", tw.type)
+
+
 # --- Herkese yayılanlar ---
 
 func _make_snapshot() -> Dictionary:
@@ -1051,6 +1348,14 @@ func _make_snapshot() -> Dictionary:
 	var spawn_counts := {}
 	for e in respawning:
 		spawn_counts[e.owner] = spawn_counts.get(e.owner, 0) + 1
+	var ids_sorted: Array = pl.keys()
+	ids_sorted.sort()
+	var placed_counts := {}
+	var tws := []
+	for tw in towers:
+		placed_counts[tw.owner] = placed_counts.get(tw.owner, 0) + 1
+		tws.append([tw.pos.x, tw.pos.y, tw.hp, tw.max, TOWER_ORDER.find(tw.type), tw.team, ids_sorted.find(tw.owner),
+			tw.slot, tw.atk_vis > 0.0, tw.hit_vis > 0.0])
 	var us := []
 	for uid in units.keys():
 		var u: Dictionary = units[uid]
@@ -1064,7 +1369,8 @@ func _make_snapshot() -> Dictionary:
 		var a2: int = ABILITY_ORDER.find(p.abil[1]) + 1 if p.abil.size() > 1 else 0
 		ps[id] = [p.pos.x, p.pos.y, p.hp, p.max_hp, p.team, p.alive, p.carrying, p.aim,
 			p.weapons[p.wsel], p.atk_vis, p.respawn, p.walls.size(), p.cmd, unit_counts.get(id, 0),
-			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0, p.hit_vis > 0.0, spawn_counts.get(id, 0)]
+			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0, p.hit_vis > 0.0, spawn_counts.get(id, 0),
+			p.tw.size(), placed_counts.get(id, 0), p.tw_ready]
 	var fl := []
 	for f in flags:
 		fl.append([f.pos.x, f.pos.y, f.state])
@@ -1076,7 +1382,7 @@ func _make_snapshot() -> Dictionary:
 		ws.append([w.rect.position.x, w.rect.position.y, w.hp, w.max, w.team])
 	snap_u = us
 	var res := {"p": ps, "f": fl, "pr": prs, "w": ws, "t": time_left, "s": scores.duplicate(),
-		"cd": countdown, "sd": sudden, "bm": booms.duplicate()}
+		"cd": countdown, "sd": sudden, "bm": booms.duplicate(), "tws": tws, "pl": maxf(placing, 0.0)}
 	booms.clear()
 	return res
 
@@ -1115,6 +1421,7 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 	out.append(s.pr.size())
 	out.append(s.w.size())
 	out.append(s.bm.size())
+	out.append(s.tws.size() | (clampi(roundi(s.pl * 10.0), 0, 4095) << 8))
 	for f in s.f:
 		out.append(_q(f[0]) | (_q(f[1]) << 16))
 		out.append(int(f[2]))
@@ -1132,7 +1439,8 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 		# Yetenekler: indeks (0 = yok), bekleme (sn), kalkan ve narayla güçlenme göstergeleri
 		out.append(clampi(int(a[14]), 0, 7) | (clampi(int(a[15]), 0, 7) << 3)
 			| (clampi(int(a[16]), 0, 31) << 6) | (clampi(int(a[17]), 0, 31) << 11)
-			| (int(a[18]) << 16) | (int(a[19]) << 17) | (clampi(int(a[21]), 0, 7) << 18))
+			| (int(a[18]) << 16) | (int(a[19]) << 17) | (clampi(int(a[21]), 0, 7) << 18)
+			| (clampi(int(a[22]), 0, 3) << 21) | (clampi(int(a[23]), 0, 3) << 23) | (int(a[24]) << 25))
 	for pr in s.pr:
 		out.append(_q(pr[0]) | (_q(pr[1]) << 16))
 		out.append(int(pr[2]) | (int(pr[3]) << 1) | (int(pr[4]) << 2))  # bit 2-9: yön (8 bit)
@@ -1142,6 +1450,10 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 	for bm in s.bm:
 		out.append(_q(bm[0]) | (_q(bm[1]) << 16))
 		out.append(clampi(roundi(bm[2] * 8.0), 0, 65535))
+	for tw in s.tws:  # kule başına 2 tamsayı: konum, (can, tür, takım, sahip sırası, yuva, saldırdı, vuruldu)
+		out.append(_q(tw[0]) | (_q(tw[1]) << 16))
+		out.append(clampi(ceili(tw[2]), 0, 511) | (maxi(int(tw[4]), 0) << 9) | (int(tw[5]) << 11)
+			| (clampi(int(tw[6]), 0, 15) << 12) | (int(tw[7]) << 16) | (int(tw[8]) << 17) | (int(tw[9]) << 18))
 	return out
 
 
@@ -1151,7 +1463,9 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 	var n_pr := a[4]
 	var n_w := a[5]
 	var n_bm := a[6]
-	var i := 7
+	var n_tw := a[7] & 255
+	var placing_t := float(a[7] >> 8) / 10.0
+	var i := 8
 	var fl := []
 	for k in 2:
 		fl.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, a[i + 1]])
@@ -1174,7 +1488,8 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 			0.15 if ((w2 >> 27) & 1) == 1 else 0.0,
 			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63,
 			w4 & 7, (w4 >> 3) & 7, (w4 >> 6) & 31, (w4 >> 11) & 31, ((w4 >> 16) & 1) == 1, ((w4 >> 17) & 1) == 1,
-			((w2 >> 28) & 1) == 1, (w4 >> 18) & 7]
+			((w2 >> 28) & 1) == 1, (w4 >> 18) & 7,
+				(w4 >> 21) & 3, (w4 >> 23) & 3, ((w4 >> 25) & 1) == 1]
 		acks[id] = (w3 >> 22) & 255
 	snap_ack = acks
 	var prs := []
@@ -1191,7 +1506,15 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 	for k in n_bm:
 		bms.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, float(a[i + 1]) / 8.0])
 		i += 2
-	return {"p": ps, "f": fl, "pr": prs, "w": ws, "t": float(a[0]) / 10.0,
+	var tws := []
+	for k in n_tw:
+		var tv := a[i + 1]
+		var ty := (tv >> 9) & 3
+		tws.append([float(a[i] & 0xFFFF) / 8.0, float((a[i] >> 16) & 0xFFFF) / 8.0, float(tv & 511),
+			TOWER_TYPES[TOWER_ORDER[mini(ty, TOWER_ORDER.size() - 1)]].hp, ty, (tv >> 11) & 1, (tv >> 12) & 15,
+			(tv >> 16) & 1, ((tv >> 17) & 1) == 1, ((tv >> 18) & 1) == 1])
+		i += 2
+	return {"p": ps, "f": fl, "pr": prs, "w": ws, "tws": tws, "pl": placing_t, "t": float(a[0]) / 10.0,
 		"s": [a[1] & 255, (a[1] >> 8) & 255], "cd": float(a[2] & 0xFFFF) / 10.0,
 		"sd": ((a[2] >> 16) & 1) == 1, "bm": bms}
 
@@ -1213,6 +1536,9 @@ func _pred_blocked(r: Rect2) -> bool:
 	for w in snap.w:
 		if Rect2(w[0], w[1], WALL_SIZE, WALL_SIZE).intersects(r):
 			return true
+	for tw in snap.tws:
+		if _tower_rect(Vector2(tw[0], tw[1])).intersects(r):
+			return true
 	return false
 
 
@@ -1232,7 +1558,7 @@ func _predict_step(dt: float) -> void:
 	if multiplayer.is_server() or snap.is_empty() or over or not snap.p.has(my_id):
 		return
 	var me: Array = snap.p[my_id]
-	if not me[5] or snap.cd > 0.0:  # ölü ya da geri sayım: sunucunun konumuna güven
+	if not me[5] or (snap.cd > 0.0 and snap.pl <= 0.0):  # ölü ya da geri sayım: sunucunun konumuna güven
 		pred_valid = false
 		return
 	if not pred_valid:
@@ -1250,7 +1576,7 @@ func _reconcile() -> void:
 	if multiplayer.is_server() or not pred_valid or not snap.p.has(my_id):
 		return
 	var me: Array = snap.p[my_id]
-	if not me[5] or snap.cd > 0.0:
+	if not me[5] or (snap.cd > 0.0 and snap.pl <= 0.0):
 		pred_valid = false
 		return
 	var ack: int = snap_ack.get(my_id, 0)
@@ -1312,6 +1638,8 @@ func _battle_over(winner: int, final_scores: Array, lost: Dictionary) -> void:
 		print("[net %d] anlık görüntü=%d  ort aralık=%.1f ms  maks=%d ms  100ms'den uzun=%d  tahmin hatası ort=%.2f maks=%.1f px (%d düzeltme)" % [
 			my_id, net_n, float(net_gap_sum) / float(net_n - 1), net_gap_max, net_late,
 			pred_err_sum / maxf(float(pred_n), 1.0), pred_err_max, pred_n])
+	if is_auto and multiplayer.is_server():
+		print("[net] en büyük anlık görüntü paketi=%d bayt (MTU sınırı 1392)" % pack_max)
 	if is_auto:
 		var counts := {}
 		for id in Net.players.keys():
@@ -1331,6 +1659,8 @@ func _send_action(kind: int) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if over or snap.is_empty():
+		return
+	if snap.pl > 0.0 and _placement_input(event):
 		return
 	var kind := -1
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -1357,6 +1687,7 @@ func _send_input() -> void:
 	var aim := (cur - my_pos).angle()
 	var atk := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	if is_auto:
+		_bot_placement()
 		var bot := _bot_input()
 		mv = bot.mv
 		aim = bot.aim
@@ -1382,6 +1713,8 @@ func _bot_input() -> Dictionary:
 	var mypos := Vector2(me[0], me[1])
 	res.aim = me[7]
 	res.cur = mypos
+	if snap.pl > 0.0:
+		return res  # yerleştirme aşamasında bot durur
 	if me[4] != 0:
 		return res
 	if not bot_cmd_sent:
@@ -1396,6 +1729,26 @@ func _bot_input() -> Dictionary:
 			bot_ab_last[s] = now_ms
 			_send_action(5 + s)
 	var target := mypos
+	var tw_target := Vector2.INF  # test: ilk 25 sn düşman kulelere saldır (kule yıkma yolunu sınar)
+	if snap.t > time_limit - 25.0:
+		var bd := 1.0e9
+		for tw in snap.tws:
+			var tpos := Vector2(tw[0], tw[1])
+			var score: float = mypos.distance_to(tpos) + float(tw[2])  # önce zayıf / yakın kule
+			if tw[5] == 1 and score < bd:
+				bd = score
+				tw_target = tpos
+	if tw_target != Vector2.INF:
+		if not bot_tw_hit:
+			bot_tw_hit = true
+			print("[bot] düşman kuleye saldırıyor ", tw_target)
+		var dt := tw_target - mypos
+		res.aim = dt.angle()
+		res.cur = tw_target
+		res.atk = dt.length() < (110.0 if me[8] == "bow" else 30.0)
+		if dt.length() > (80.0 if me[8] == "bow" else 20.0):
+			res.mv = dt.normalized()
+		return res
 	if not bot_kill_done:
 		var enemy: Array = []
 		for id in snap.p.keys():
@@ -1465,6 +1818,9 @@ func _process(delta: float) -> void:
 	for entry in feed:
 		entry[1] -= delta
 	feed = feed.filter(func(e): return e[1] > 0.0)
+	if snap.pl > 0.0 and not tw_init and snap.p.has(my_id) and snap.p[my_id][22] > 0:
+		tw_init = true
+		tw_sel = 0  # yerleştirme başlayınca ilk kule seçili gelir
 	queue_redraw()
 	hud.queue_redraw()
 	if shots_dir != "" and (not snap.pr.is_empty() or _attack_active(now_ms)) and shot_n < 90 and now_ms - shot_last > 45:
@@ -1478,6 +1834,114 @@ func _process(delta: float) -> void:
 			shot = shot.get_region(r)
 		shot.save_png("%s/b%d_%03d.png" % [shots_dir, my_id, shot_n])
 		shot_n += 1
+
+
+# --- Kule yerleştirme (istemci) ---
+
+## Kendi kulelerimin türleri (envanterden, sunucuyla aynı sırada).
+func _my_tower_types() -> Array:
+	var out: Array = []
+	for item in Game.inventory.get(my_id, []):
+		if TOWER_TYPES.has(item) and out.size() < Game.TOWER_CAP:
+			out.append(item)
+	return out
+
+
+func _my_idx() -> int:
+	var ids: Array = snap.p.keys()
+	ids.sort()
+	return ids.find(my_id)
+
+
+func _send_place(slot: int, pos: Vector2) -> void:
+	if multiplayer.is_server():
+		_srv_place_tower(slot, pos)
+	else:
+		_srv_place_tower.rpc_id(1, slot, pos)
+
+
+func _send_ready() -> void:
+	if multiplayer.is_server():
+		_srv_ready_placement()
+	else:
+		_srv_ready_placement.rpc_id(1)
+
+
+## Diğer kulelerin konumları (seçili kendi kulem hariç: taşırken kendine çarpmasın).
+func _other_tower_pos(skip_slot: int) -> Array:
+	var out: Array = []
+	var mi := _my_idx()
+	for tw in snap.tws:
+		if tw[6] == mi and tw[7] == skip_slot:
+			continue
+		out.append(Vector2(tw[0], tw[1]))
+	return out
+
+
+## T = sıradaki kuleyi seç, sol tık = koy / taşı, sağ tık = kendi kulemi al (ya da seçimi bırak), Enter = hazır.
+func _placement_input(event: InputEvent) -> bool:
+	if not snap.p.has(my_id):
+		return false
+	var me: Array = snap.p[my_id]
+	var total: int = me[22]
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_T and total > 0:
+			tw_sel = (tw_sel + 1) % total
+			return true
+		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
+			_send_ready()
+			return true
+	elif event is InputEventMouseButton and event.pressed:
+		var c := get_global_mouse_position()
+		if event.button_index == MOUSE_BUTTON_LEFT and tw_sel >= 0 and tw_sel < total:
+			if _tower_spot_ok(me[4], c, _other_tower_pos(tw_sel)):
+				_send_place(tw_sel, c)
+				var placed: Array = []  # sıradaki yerleştirilmemiş kuleyi seç
+				var mi := _my_idx()
+				for tw in snap.tws:
+					if tw[6] == mi:
+						placed.append(tw[7])
+				placed.append(tw_sel)
+				tw_sel = -1
+				for k in total:
+					if not placed.has(k):
+						tw_sel = k
+						break
+			return true
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			tw_sel = -1
+			var mi2 := _my_idx()
+			for tw in snap.tws:
+				if tw[6] == mi2 and Vector2(tw[0], tw[1]).distance_to(c) <= 14.0:
+					tw_sel = tw[7]
+			return true
+	return false
+
+
+## Test botu: yerleştirme aşamasında kulelerini cepheye yakın koyar (bir tanesini taşır) ve hazır der.
+func _bot_placement() -> void:
+	if bot_tw_done or snap.pl <= 0.0 or not snap.p.has(my_id):
+		return
+	bot_tw_done = true
+	var me: Array = snap.p[my_id]
+	var total: int = me[22]
+	if total == 0:
+		return
+	var k := 0  # takımdaki sıram: herkes ayrı satıra koysun (kuleler arası 40 birim kuralı)
+	var ids: Array = snap.p.keys()
+	ids.sort()
+	for id in ids:
+		if id == my_id:
+			break
+		if snap.p[id][4] == me[4]:
+			k += 1
+	var fx := 470.0 if me[4] == 0 else 810.0
+	var fy: float = [330.0, 150.0, 520.0, 220.0, 450.0][k % 5]
+	var sgn := 1.0 if me[4] == 0 else -1.0
+	for slot in total:
+		_send_place(slot, Vector2(fx + sgn * slot * 40.0, fy))
+	_send_place(0, Vector2(fx, fy - 8.0))  # taşıma yolunu da dene
+	_send_ready()
 
 
 # ============================ ÇİZİM ============================
@@ -1529,6 +1993,17 @@ func _draw() -> void:
 			draw_rect(wr, Color(0.55, 0.4, 0.25) if w[3] <= 40.0 else Color(0.6, 0.6, 0.65))
 			draw_rect(wr, _tint(TEAM_COLORS[w[4]], 0.9), false, 1.0)
 		draw_rect(Rect2(w[0], w[1] - 3.0, WALL_SIZE * w[2] / w[3], 1.5), Color(0.3, 1.0, 0.3))
+
+	if snap.pl > 0.0 and snap.p.has(my_id):  # yerleştirme bölgem
+		var zx := _zone_x(snap.p[my_id][4])
+		draw_rect(Rect2(zx.x, 0.0, zx.y - zx.x, ARENA.size.y), _tint(TEAM_COLORS[snap.p[my_id][4]], 0.12))
+		draw_rect(Rect2(zx.x, 0.0, zx.y - zx.x, ARENA.size.y), _tint(TEAM_COLORS[snap.p[my_id][4]], 0.5), false, 1.0)
+	var tw_ids: Array = snap.p.keys()
+	tw_ids.sort()
+	for tw in snap.tws:
+		_draw_tower(tw, tw_ids.find(my_id) == tw[6])
+	if snap.pl > 0.0 and snap.p.has(my_id) and tw_sel >= 0:
+		_draw_tower_ghost()
 
 	for t in 2:
 		var f: Array = snap.f[t]
@@ -1641,6 +2116,53 @@ func _draw() -> void:
 	if snap.p.has(my_id) and snap.p[my_id][12] == 1:
 		var c := get_global_mouse_position()
 		draw_arc(c, 6.0, 0.0, TAU, 10, Color(1, 1, 1, 0.6), 1.0)
+
+
+## Kule: sprite varsa o (buildings/<tür>_<blue|red>.png), yoksa takım renkli kutu + üstünde ok (okçu) / dişli tepe (taş).
+func _draw_tower(a: Array, mine: bool) -> void:
+	var c := Vector2(a[0], a[1])
+	var col: Color = TEAM_COLORS[a[5]]
+	var r := _tower_rect(c)
+	var spr: Texture2D = Art.tex("buildings/%s_%s.png" % [TOWER_ORDER[a[4]], Art.TEAM_DIR[a[5]]]) if Art.available else null
+	if spr != null:
+		var sz := Vector2(spr.get_width(), spr.get_height()) * SPR_TILE
+		draw_texture_rect(spr, Rect2(c + Vector2(-sz.x * 0.5, TOWER_HALF - sz.y), sz), false)
+	else:
+		draw_rect(r, col.darkened(0.55))
+		draw_rect(r.grow(-2.0), col.darkened(0.2))
+		if a[4] == 0:  # okçu kulesi: ortada ok işareti
+			draw_rect(Rect2(c.x - 0.5, c.y - 5.0, 1.0, 10.0), Color(0.97, 0.92, 0.6))
+			draw_rect(Rect2(c.x - 3.0, c.y - 5.0, 6.0, 1.0), Color(0.97, 0.92, 0.6))
+		else:  # taş kule: gri çekirdek + tepe dişleri
+			draw_rect(r.grow(-4.0), Color(0.62, 0.62, 0.68))
+			for k in 3:
+				draw_rect(Rect2(r.position.x + 1.0 + k * 5.5, r.position.y - 2.0, 3.0, 3.0), Color(0.62, 0.62, 0.68))
+		draw_rect(r, Color(0.05, 0.05, 0.08), false, 1.0)
+	if a[8]:  # ateş etti
+		draw_arc(c, 11.0, 0.0, TAU, 12, Color(1.0, 1.0, 0.7, 0.8), 1.0)
+	if a[9]:  # vuruldu
+		draw_rect(r, Color(1, 1, 1, 0.6))
+	if mine:
+		draw_rect(r.grow(1.5), Color(1.0, 0.85, 0.25, 0.9), false, 1.0)
+		if snap.pl > 0.0:
+			_text(self, c + Vector2(-4, 4), str(a[7] + 1), 9, Color.WHITE, 8.0, HORIZONTAL_ALIGNMENT_CENTER)
+	if a[2] < a[3] or snap.pl > 0.0:
+		draw_rect(Rect2(c.x - TOWER_HALF, c.y - TOWER_HALF - 5.0, TOWER_SIZE, 2.0), Color(0.3, 0.05, 0.05))
+		draw_rect(Rect2(c.x - TOWER_HALF, c.y - TOWER_HALF - 5.0, TOWER_SIZE * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
+
+
+## Yerleştirme hayaleti: imleci izler, geçerliyse yeşil, değilse kırmızı; menzil halkası.
+func _draw_tower_ghost() -> void:
+	var types := _my_tower_types()
+	if tw_sel >= types.size():
+		return
+	var me: Array = snap.p[my_id]
+	var c := get_global_mouse_position()
+	var ok := _tower_spot_ok(me[4], c, _other_tower_pos(tw_sel))
+	var gc := Color(0.3, 1.0, 0.4) if ok else Color(1.0, 0.3, 0.3)
+	draw_rect(_tower_rect(c), _tint(gc, 0.45))
+	draw_rect(_tower_rect(c), _tint(gc, 0.95), false, 1.0)
+	draw_arc(c, TOWER_TYPES[types[tw_sel]].range, 0.0, TAU, 40, _tint(gc, 0.45), 1.0)
 
 
 ## Elips noktaları (ayak halkası için).
@@ -1916,7 +2438,7 @@ func _draw_hud() -> void:
 		_hud_text(Vector2(0, 180), "Savaş yükleniyor...", 14, Color.WHITE, VIEW.x, HORIZONTAL_ALIGNMENT_CENTER)
 		return
 	_draw_scorebar()
-	if snap.cd > 0.0:
+	if snap.cd > 0.0 and snap.pl <= 0.0:
 		var bx := Rect2(130, 126, 380, 92)
 		hud.draw_style_box(UiTheme.panel_box(), bx)
 		_hud_text(Vector2(130, 154), "HAZIRLAN: %d" % ceili(snap.cd), 20, UiTheme.GOLD_L, 380.0, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1925,6 +2447,7 @@ func _draw_hud() -> void:
 			"Boşluk / F: yeteneklerin (markette aldıysan)"]
 		for i in tips.size():
 			_hud_text(Vector2(130, 176 + i * 14), tips[i], 10, Color(1, 1, 1, 0.9), 380.0, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_placement_hud()
 	if snap.p.has(my_id):
 		var me: Array = snap.p[my_id]
 		_draw_player_bar(me)
@@ -1933,6 +2456,20 @@ func _draw_hud() -> void:
 			_hud_text(Vector2(220, 178), "Yeniden doğuyorsun: %d" % ceili(me[10]), 14, Color.WHITE, 200.0, HORIZONTAL_ALIGNMENT_CENTER)
 	_draw_feed()
 	_draw_minimap()
+
+
+## Yerleştirme aşaması bandı: kalan süre + tuşlar.
+func _draw_placement_hud() -> void:
+	if snap.pl <= 0.0 or not snap.p.has(my_id):
+		return
+	var me: Array = snap.p[my_id]
+	hud.draw_style_box(UiTheme.panel_box(), Rect2(110, 26, 420, 52))
+	_hud_text(Vector2(110, 44), "YERLEŞTİRME: %d sn" % ceili(snap.pl), 14, UiTheme.GOLD_L, 420.0, HORIZONTAL_ALIGNMENT_CENTER)
+	var line := "Kulen yok: diğerlerinin yerleştirmesini bekle"
+	if me[22] > 0:
+		line = "T = kule seç · Sol tık = koy · Sağ tık = al · Enter = hazır   (%d/%d kule%s)" % [
+			me[23], me[22], ", HAZIR" if me[24] else ""]
+	_hud_text(Vector2(110, 62), line, 9, Color(1, 1, 1, 0.9), 420.0, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 ## Üst bant: [Mavi skor] [süre] [Kırmızı skor], takım renkli, ortada metal saat kutusu.

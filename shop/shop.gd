@@ -513,6 +513,8 @@ func _auto_play() -> void:  # test için otomatik oyuncu
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("ab="):
 			pref = "ability_" + a.get_slice("=", 1)
+		elif a.begins_with("tw="):  # Test: `tw=archer|stone` verilen kuleyi tercih et (yerleştirme / kule savaş yolunu sınar)
+			pref = "tower_" + a.get_slice("=", 1)
 	if auto_calls == 2 and pref == "" and not owned.is_empty():
 		_request_sell(owned[owned.size() - 1])  # satma testi: sonra aynı tur alışverişe devam
 	if pref != "" and stock.get(pref, 0) > 0 and not owned.has(pref) and Game.can_buy(my, Items.get_item(pref)):
