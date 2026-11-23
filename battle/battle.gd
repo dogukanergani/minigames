@@ -72,6 +72,12 @@ const RALLY_SPEED := 1.4
 const RALLY_DMG := 1.5
 const SUDDEN_MAX := 120.0  # altın bayrak en fazla bu kadar sürer (sn)
 const ARROW_SPEED := 220.0
+# Yalnızca GÖRSEL zamanlayıcılar (oyun mantığına etkisi yok): anlık görüntüde "az önce saldırdı / vuruldu" biti
+const ATK_VIS := 0.15
+const HIT_VIS := 0.12
+const HIT_FLASH_MS := 80  # vurulan beyaz yanıp söner
+const SPARK_MS := 200  # vuruş kıvılcımı (4 kare)
+const PUFF_MS := 350  # ölüm bulutu (5 kare)
 const ARROW_LIFE := 0.9
 const WALL_HP := {"wall_wood": 40, "wall_stone": 100}
 const SHIELD := {"shield_wood": 0.15, "shield_iron": 0.30}
@@ -129,14 +135,26 @@ var sudden_t := 0.0  # altın bayrakta geçen süre
 
 # --- İstemci durumu ---
 var snap: Dictionary = {}
-var snap_u: Array = []  # birimler: [uid, x, y, hp, max_hp, takım, tür]
+var snap_u: Array = []  # birimler: [uid, x, y, hp, max_hp, takım, tür, sahip (istemcide -1), saldırdı, vuruldu, sola bakış]
 var view_pos: Dictionary = {}
 var view_u: Dictionary = {}
 # Sprite animasyonu için hareket / bakış yönü (istemci, sadece çizim)
 var unit_move: Dictionary = {}  # uid -> hareket ediyor mu
 var unit_flip: Dictionary = {}  # uid -> sola mı bakıyor
 var hero_move: Dictionary = {}
-var atk_anim: Dictionary = {}  # peer_id -> saldırı animasyonunun başladığı an (ms)
+var atk_anim: Dictionary = {}  # peer_id -> {t: başlangıç ms, w: silah, aim: açı, pred: yerel tahmin mi}
+var atk_prev: Dictionary = {}  # peer_id -> önceki anlık görüntüde saldırı işareti (yükselen kenar = yeni saldırı)
+var hit_prev: Dictionary = {}
+var hit_t: Dictionary = {}  # peer_id -> vurulma anı (ms): beyaz parlama
+var alive_prev: Dictionary = {}
+var u_atk: Dictionary = {}  # uid -> saldırı animasyonu başlangıcı (ms)
+var u_atk_prev: Dictionary = {}
+var u_hit_prev: Dictionary = {}
+var u_hit_t: Dictionary = {}
+var fx_sparks: Array = []  # [konum, başlangıç ms]: vuruş kıvılcımları
+var fx_puffs: Array = []  # [konum, başlangıç ms]: ölüm bulutları
+var pred_atk_next := 0  # kendi saldırı animasyonu tahmini: bir sonraki izinli an (ms)
+var shake_t := -1000  # kamera sarsıntısı başlangıcı (ms)
 var feed: Array = []
 var send_acc := 0.0
 var my_id := 0
@@ -288,7 +306,7 @@ func _make_player(id: int, team: int, idx: int) -> Dictionary:
 	return {
 		"team": team, "idx": idx, "pos": pos, "cur": pos,
 		"hp": max_hp, "max_hp": max_hp, "alive": true, "respawn": 0.0, "carrying": -1,
-		"aim": 0.0 if team == 0 else PI, "cd": 0.0, "atk_vis": 0.0,
+		"aim": 0.0 if team == 0 else PI, "cd": 0.0, "atk_vis": 0.0, "hit_vis": 0.0,
 		"weapons": weapons, "wsel": wsel_i, "armor": armor, "speed": spd, "walls": wall_list,
 		"cmd": 0,
 		"abil": abil, "ab_cd": [0.0, 0.0], "shield_t": 0.0, "rally_t": 0.0,
@@ -315,6 +333,7 @@ func _add_unit(id: int, p: Dictionary, item_id: String, slot: int, fake: bool) -
 		"tkind": 0, "tid": -1, "stuck": 0.0, "side": 0.0,
 		"side_sign": 1.0 if randf() < 0.5 else -1.0,
 		"half": t.half, "sep": Vector2.ZERO, "sep_t": randf() * 0.12,
+		"atk_vis": 0.0, "hit_vis": 0.0, "face_l": p.team == 1,  # yalnızca görsel
 	}
 	next_uid += 1
 
@@ -421,6 +440,7 @@ func _update_player(id: int, p: Dictionary, dt: float) -> void:
 		p.ab_cd[i] = maxf(0.0, p.ab_cd[i] - dt)
 	p.shield_t = maxf(0.0, p.shield_t - dt)
 	p.rally_t = maxf(0.0, p.rally_t - dt)
+	p.hit_vis = maxf(0.0, p.hit_vis - dt)
 	if not p.alive:
 		p.respawn -= dt
 		if p.respawn <= 0.0:
@@ -479,7 +499,7 @@ func _move(p: Dictionary, d: Vector2) -> void:
 func _attack(id: int, p: Dictionary) -> void:
 	var w: Dictionary = WEAPONS[p.weapons[p.wsel]]
 	p.cd = w.cd
-	p.atk_vis = 0.15
+	p.atk_vis = ATK_VIS
 	var dir := Vector2.from_angle(p.aim)
 	if w.ranged:
 		projectiles.append({"pos": p.pos + dir * 8.0, "vel": dir * ARROW_SPEED, "team": p.team,
@@ -518,6 +538,7 @@ func _damage(target_id: int, amount: float, by: int) -> void:
 	var t: Dictionary = pl[target_id]
 	var shield: float = 0.5 if t.shield_t > 0.0 else 1.0  # Kalkan Patlaması'nın kısa koruması
 	t.hp -= amount * (1.0 - t.armor) * shield
+	t.hit_vis = HIT_VIS
 	if t.hp <= 0.0 and t.alive:
 		t.alive = false
 		t.respawn = respawn_time
@@ -531,6 +552,7 @@ func _damage_unit(uid: int, amount: float) -> void:
 		return
 	var u: Dictionary = units[uid]
 	u.hp -= amount * (1.0 - UNIT_TYPES[u.type].get("armor", 0.0))
+	u.hit_vis = HIT_VIS
 	if u.hp <= 0.0:
 		if not u.fake:
 			if not losses.has(u.owner):
@@ -613,6 +635,8 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 	var t: Dictionary = UNIT_TYPES[u.type]
 	var spd: float = t.speed * speed_mul * (RALLY_SPEED if owner_p.rally_t > 0.0 else 1.0)
 	u.cd = maxf(0.0, u.cd - dt)
+	u.atk_vis = maxf(0.0, u.atk_vis - dt)
+	u.hit_vis = maxf(0.0, u.hit_vis - dt)
 	u.retarget -= dt
 	u.sep_t -= dt
 	if u.sep_t <= 0.0:
@@ -749,6 +773,8 @@ func _unit_attack(u: Dictionary, t: Dictionary, tp: Vector2) -> void:
 	if u.cd > 0.0:
 		return
 	u.cd = t.cd
+	u.atk_vis = ATK_VIS  # görsel: saldırı animasyonu + hedefe dönük bakış
+	u.face_l = tp.x < u.pos.x
 	# Savaş Narası etkisindeyse sahibinin birlikleri %50 daha çok hasar verir
 	var dmg: float = t.dmg * (RALLY_DMG if pl.has(u.owner) and pl[u.owner].rally_t > 0.0 else 1.0)
 	if t.has("aoe"):  # top mermisi: hedef noktaya uçar ve orada patlar
@@ -994,7 +1020,8 @@ func _make_snapshot() -> Dictionary:
 	for uid in units.keys():
 		var u: Dictionary = units[uid]
 		unit_counts[u.owner] = unit_counts.get(u.owner, 0) + 1
-		us.append([uid, u.pos.x, u.pos.y, u.hp, u.max_hp, u.team, UNIT_ORDER.find(u.type), u.owner])
+		us.append([uid, u.pos.x, u.pos.y, u.hp, u.max_hp, u.team, UNIT_ORDER.find(u.type), u.owner,
+			u.atk_vis > 0.0, u.hit_vis > 0.0, u.face_l])
 	var ps := {}
 	for id in pl.keys():
 		var p: Dictionary = pl[id]
@@ -1002,7 +1029,7 @@ func _make_snapshot() -> Dictionary:
 		var a2: int = ABILITY_ORDER.find(p.abil[1]) + 1 if p.abil.size() > 1 else 0
 		ps[id] = [p.pos.x, p.pos.y, p.hp, p.max_hp, p.team, p.alive, p.carrying, p.aim,
 			p.weapons[p.wsel], p.atk_vis, p.respawn, p.walls.size(), p.cmd, unit_counts.get(id, 0),
-			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0]
+			a1, a2, ceili(p.ab_cd[0]), ceili(p.ab_cd[1]), p.shield_t > 0.0, p.rally_t > 0.0, p.hit_vis > 0.0]
 	var fl := []
 	for f in flags:
 		fl.append([f.pos.x, f.pos.y, f.state])
@@ -1062,7 +1089,7 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 		out.append(_q(a[0]) | (_q(a[1]) << 16))
 		out.append(clampi(ceili(a[2]), 0, 511) | (clampi(int(a[3]), 0, 511) << 9) | (int(a[4]) << 18)
 			| (int(a[5]) << 19) | ((int(a[6]) + 1) << 20) | (maxi(weapon_order.find(a[8]), 0) << 22)
-			| (int(a[12]) << 25) | (int(a[9] > 0.0) << 27))
+			| (int(a[12]) << 25) | (int(a[9] > 0.0) << 27) | (int(a[20]) << 28))
 		var aim8 := roundi((float(a[7]) + PI) / TAU * 256.0) & 255
 		var ack := int(inputs.get(id, {}).get("seq", 0)) & 255
 		out.append(aim8 | (clampi(ceili(a[10]), 0, 15) << 8) | (clampi(int(a[11]), 0, 15) << 12)
@@ -1111,7 +1138,8 @@ func _unpack_snapshot(a: PackedInt32Array) -> Dictionary:
 			weapon_order[wi] if wi < weapon_order.size() else "fist",
 			0.15 if ((w2 >> 27) & 1) == 1 else 0.0,
 			float((w3 >> 8) & 15), (w3 >> 12) & 15, (w2 >> 25) & 3, (w3 >> 16) & 63,
-			w4 & 7, (w4 >> 3) & 7, (w4 >> 6) & 31, (w4 >> 11) & 31, ((w4 >> 16) & 1) == 1, ((w4 >> 17) & 1) == 1]
+			w4 & 7, (w4 >> 3) & 7, (w4 >> 6) & 31, (w4 >> 11) & 31, ((w4 >> 16) & 1) == 1, ((w4 >> 17) & 1) == 1,
+			((w2 >> 28) & 1) == 1]
 		acks[id] = (w3 >> 22) & 255
 	snap_ack = acks
 	var prs := []
@@ -1210,13 +1238,14 @@ func _reconcile() -> void:
 
 
 ## Birimler ayrı ve sıkıştırılmış gider (50 birim tek pakette MTU'yu aşıyordu): birim başına 4 tamsayı.
+## Tür kelimesi: bit 0-3 takım, 4-7 tür, 8 saldırdı, 9 vuruldu, 10 sola bakıyor (son üçü yalnızca görsel).
 func _pack_units() -> PackedInt32Array:
 	var out := PackedInt32Array()
 	for a in snap_u:
 		out.append(a[0])
 		out.append(roundi(a[1] * 8.0) | (roundi(a[2] * 8.0) << 16))
 		out.append(ceili(a[3]) | (ceili(a[4]) << 12))
-		out.append(a[5] | (maxi(a[6], 0) << 4))
+		out.append(a[5] | (maxi(a[6], 0) << 4) | (int(a[8]) << 8) | (int(a[9]) << 9) | (int(a[10]) << 10))
 	return out
 
 
@@ -1228,7 +1257,7 @@ func _snapshot_units(packed: PackedInt32Array) -> void:
 		var hp := packed[i + 2]
 		var ty := packed[i + 3]
 		us.append([packed[i], float(pos & 0xFFFF) / 8.0, float(pos >> 16) / 8.0, float(hp & 0xFFF), float(hp >> 12),
-			ty & 15, ty >> 4])
+			ty & 15, (ty >> 4) & 15, -1, ((ty >> 8) & 1) == 1, ((ty >> 9) & 1) == 1, ((ty >> 10) & 1) == 1])
 	snap_u = us
 
 
@@ -1299,6 +1328,8 @@ func _send_input() -> void:
 		aim = bot.aim
 		atk = bot.atk
 		cur = bot.cur
+	if atk:
+		_predict_attack(aim)
 	in_seq += 1
 	held_mv = mv.limit_length(1.0)
 	if multiplayer.is_server():
@@ -1381,9 +1412,19 @@ func _process(delta: float) -> void:
 		unit_move[a[0]] = d.length() > 0.2
 		if absf(d.x) > 0.06:
 			unit_flip[a[0]] = d.x < 0.0
+	var now_ms := Time.get_ticks_msec()
+	for uid in view_u.keys():  # bu karede kaybolan birim: öldü -> puf bulutu
+		if not new_u.has(uid):
+			fx_puffs.append([view_u[uid], now_ms])
+			u_atk.erase(uid)
 	view_u = new_u
+	_vis_events(now_ms)
 	if snap.p.has(my_id) and not over:
 		camera.position = view_pos[my_id].round()
+		var shaking := now_ms - shake_t < 90
+		camera.offset = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)).round() if shaking else Vector2.ZERO
+	fx_sparks = fx_sparks.filter(func(e): return now_ms - int(e[1]) < SPARK_MS)
+	fx_puffs = fx_puffs.filter(func(e): return now_ms - int(e[1]) < PUFF_MS)
 	for bv in booms_vis:
 		bv[2] -= delta
 	booms_vis = booms_vis.filter(func(e): return e[2] > 0.0)
@@ -1392,9 +1433,16 @@ func _process(delta: float) -> void:
 	feed = feed.filter(func(e): return e[1] > 0.0)
 	queue_redraw()
 	hud.queue_redraw()
-	if shots_dir != "" and not snap.pr.is_empty() and shot_n < 60 and Time.get_ticks_msec() - shot_last > 70:
-		shot_last = Time.get_ticks_msec()  # test: mermi havadayken ekran görüntüsü (shots=<klasör>)
-		get_viewport().get_texture().get_image().save_png("%s/b%d_%03d.png" % [shots_dir, my_id, shot_n])
+	if shots_dir != "" and (not snap.pr.is_empty() or _attack_active(now_ms)) and shot_n < 90 and now_ms - shot_last > 45:
+		shot_last = now_ms  # test: mermi havadayken / saldırı sırasında ekran görüntüsü (shots=<klasör>)
+		var shot := get_viewport().get_texture().get_image()
+		if snap.p.has(my_id):  # kendi kahramanın çevresi (200x130 dünya birimi)
+			var k_px := float(shot.get_width()) / VIEW.x
+			var c: Vector2 = get_viewport().get_canvas_transform() * (view_pos[my_id] as Vector2) * k_px
+			var sz := Vector2(200.0, 130.0) * k_px
+			var r := Rect2i(Vector2i((c - sz * 0.5).clamp(Vector2.ZERO, Vector2(shot.get_size()) - sz)), Vector2i(sz))
+			shot = shot.get_region(r)
+		shot.save_png("%s/b%d_%03d.png" % [shots_dir, my_id, shot_n])
 		shot_n += 1
 
 
@@ -1486,6 +1534,11 @@ func _draw() -> void:
 				3:  # kalkancı: kalın beyaz çerçeve + ortada kalkan çizgisi
 					draw_rect(ur.grow(1.0), Color(0.92, 0.92, 0.95), false, 2.0)
 					draw_rect(Rect2(upos.x - 0.5, upos.y - 3.0, 1.0, 6.0), Color(0.92, 0.92, 0.95))
+			var now_u := Time.get_ticks_msec()
+			if now_u - int(u_atk.get(a[0], -1000)) < 150:  # kutu yedeği: saldırı anında beyaz çerçeve
+				draw_rect(ur.grow(1.5), Color(1, 1, 0.8, 0.9), false, 1.0)
+			if now_u - int(u_hit_t.get(a[0], -1000)) < HIT_FLASH_MS:
+				draw_rect(ur, Color(1, 1, 1, 0.85))
 		if a[3] < a[4]:
 			var bar_y := upos.y - uh - 3.0 - (8.0 if sprite_drawn else 0.0)
 			draw_rect(Rect2(upos.x - uh, bar_y, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
@@ -1529,6 +1582,8 @@ func _draw() -> void:
 			draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), col)
 			var outline := Color.WHITE if mine else Color(0.05, 0.05, 0.08)
 			draw_rect(Rect2(pos.x - HALF - 1.0, pos.y - HALF - 1.0, PSIZE + 2.0, PSIZE + 2.0), outline, false, 1.0)
+			if Time.get_ticks_msec() - int(hit_t.get(id, -1000)) < HIT_FLASH_MS:  # vurulma: beyaz parlama
+				draw_rect(Rect2(pos.x - HALF, pos.y - HALF, PSIZE, PSIZE), Color(1, 1, 1, 0.85))
 		if a[18]:  # Kalkan Patlaması koruması
 			draw_arc(pos, 11.0, 0.0, TAU, 20, Color(0.4, 0.8, 1.0, 0.9), 1.5)
 		if a[19]:  # Savaş Narası: birlik güçlü
@@ -1538,16 +1593,15 @@ func _draw() -> void:
 			aim_a = (get_global_mouse_position() - pos).angle()  # kendi nişanım gecikmesiz
 		var dir := Vector2.from_angle(aim_a)
 		draw_line(pos, pos + dir * 12.0, Color.WHITE, 1.0)
-		if a[9] > 0.0:
-			var reach: float = WEAPONS[a[8]].range
-			if reach > 0.0:
-				draw_arc(pos, reach, aim_a - deg_to_rad(60.0), aim_a + deg_to_rad(60.0), 8, Color(1, 1, 1, 0.8), 1.0)
+		_draw_attack_fx(id, pos, a[4])
 		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0, 2.0), Color(0.3, 0.05, 0.05))
 		draw_rect(Rect2(pos.x - 8.0, pos.y - top, 16.0 * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
 		if a[6] >= 0:
 			draw_rect(Rect2(pos.x + 16.0, pos.y - top - 9.0, 7.0, 5.0), TEAM_COLORS[a[6]])
 		_text(self, pos + Vector2(-24, -top - 3.0), _name_of(id), 8, _tint(Color.WHITE, 0.85), 48.0, HORIZONTAL_ALIGNMENT_CENTER)
 		_draw_hero_marker(pos + Vector2(0, -top - 12.0), col, mine)
+
+	_draw_hit_fx()
 
 	# Saldır komutundayken imleç işareti
 	if snap.p.has(my_id) and snap.p[my_id][12] == 1:
@@ -1601,45 +1655,214 @@ func _anim_frame(t: Texture2D, step_ms: float, phase: int) -> int:
 	return (int(float(Time.get_ticks_msec()) / step_ms) + phase) % Art.frame_count(t)
 
 
-## Birimi sprite ile çizer (hareket ediyorsa koşu, değilse bekleme; yöne göre ayna). Dosya yoksa false.
+## Birimi sprite ile çizer (saldırıyorsa saldırı şeridi, hareket ediyorsa koşu, değilse bekleme; yöne göre ayna).
+## Vurulunca kısa beyaz parlama. Dosya yoksa false.
 func _draw_unit_sprite(a: Array, upos: Vector2) -> bool:
 	var sprite: String = Art.unit_sprite(UNIT_ORDER[a[6]])
 	if sprite == "":
 		return false
 	var uid: int = a[0]
-	var t: Texture2D = Art.unit_tex(a[5], sprite, "run" if unit_move.get(uid, false) else "idle")
+	var now := Time.get_ticks_msec()
+	var t: Texture2D = null
+	var frame := 0
+	if u_atk.has(uid) and Art.has_attack(sprite):
+		var at := Art.unit_tex(a[5], sprite, Art.attack_anim(sprite))
+		if at != null:
+			var fr := Art.attack_frame(at, sprite, float(now - int(u_atk[uid])))
+			if fr >= 0:
+				t = at
+				frame = fr
 	if t == null:
-		return false
+		t = Art.unit_tex(a[5], sprite, "run" if unit_move.get(uid, false) else "idle")
+		if t == null:
+			return false
+		frame = _anim_frame(t, 110.0, uid * 3)
 	var flip: bool = unit_flip.get(uid, a[5] == 1)  # Mavi sağa, Kırmızı sola bakarak başlar
-	Art.draw_frame(self, t, _anim_frame(t, 110.0, uid * 3), upos + Vector2(0, 2), Art.unit_scale(), flip, Color.WHITE, Art.get_meta_value("unit_foot"))
+	var foot := Art.foot_for(t, 24.0, Art.get_meta_value("unit_foot"))
+	Art.draw_frame(self, t, frame, upos + Vector2(0, 2), Art.unit_scale(), flip, Color.WHITE, foot)
+	var hk := 1.0 - float(now - int(u_hit_t.get(uid, -1000))) / float(HIT_FLASH_MS)
+	if hk > 0.0:
+		Art.draw_frame(self, Art.white(t), frame, upos + Vector2(0, 2), Art.unit_scale(), flip, Color(1, 1, 1, 0.5 + 0.5 * hk), foot)
 	return true
 
 
 ## Kahramanı sprite ile çizer. Silaha göre görünüm: yay = okçu, mızrak = mızrakçı, diğerleri = savaşçı.
+## Saldırı sırasında silaha özel saldırı şeridi (yön saldırı başındaki nişandan), vurulunca beyaz parlama.
 func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
-	var sprite: String = Art.WEAPON_SPRITE.get(a[8], "warrior")
 	var team: int = a[4]
 	var now := Time.get_ticks_msec()
-	if a[9] > 0.0 and now - int(atk_anim.get(id, -1000)) > 350:
-		atk_anim[id] = now  # yeni saldırı: animasyonu baştan oynat
-	var since: int = now - int(atk_anim.get(id, -1000))
+	var sprite: String = Art.WEAPON_SPRITE.get(a[8], "warrior")
+	var face_a: float = a[7]
+	if id == my_id and not is_auto:
+		face_a = (get_global_mouse_position() - pos).angle()
 	var t: Texture2D = null
 	var frame := 0
-	if since < 300:
-		t = Art.unit_tex(team, sprite, Art.attack_anim(sprite))
-		if t != null:
-			frame = mini(Art.frame_count(t) - 1, int(float(since) / 300.0 * float(Art.frame_count(t))))
+	var st: Dictionary = atk_anim.get(id, {})
+	if not st.is_empty():
+		var w: String = st.w
+		var s2: String = Art.WEAPON_SPRITE.get(w, "warrior")
+		var at := Art.unit_tex(team, s2, Art.hero_attack_anim(s2, w))
+		if at != null:
+			var fr := Art.attack_frame(at, w, float(now - int(st.t)))
+			if fr >= 0:
+				t = at
+				frame = fr
+				face_a = st.aim
 	if t == null:
 		var moving: bool = hero_move.get(id, false)
 		t = Art.unit_tex(team, sprite, "run" if moving else "idle")
 		if t == null:
 			return false
 		frame = _anim_frame(t, 90.0 if moving else 130.0, 0)
-	var aim_a: float = a[7]
-	if id == my_id and not is_auto:
-		aim_a = (get_global_mouse_position() - pos).angle()
-	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), Art.hero_scale(), cos(aim_a) < 0.0)
+	var foot: float = Art.foot_for(t, 32.0, Art.get_meta_value("foot")) if Art.custom else -1.0
+	var flip := cos(face_a) < 0.0
+	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), Art.hero_scale(), flip, Color.WHITE, foot)
+	var hk := 1.0 - float(now - int(hit_t.get(id, -1000))) / float(HIT_FLASH_MS)
+	if hk > 0.0:
+		Art.draw_frame(self, Art.white(t), frame, pos + Vector2(0, 4), Art.hero_scale(), flip, Color(1, 1, 1, 0.5 + 0.5 * hk), foot)
 	return true
+
+
+# ============================ SALDIRI GÖRSELLERİ (yalnızca istemci çizimi) ============================
+
+## Saldırı animasyonunu başlatır. `pred`: kendi kahramanım için sunucuyu beklemeden (görsel tahmin).
+func _start_atk(id: int, weapon: String, aim: float, pred: bool) -> void:
+	atk_anim[id] = {"t": Time.get_ticks_msec(), "w": weapon, "aim": aim, "pred": pred}
+
+
+## Fareye basınca kendi saldırı animasyonumu hemen başlat (yüksek pingde de tepkisel). Bekleme süresi
+## yerelde izlenir; sunucunun "saldırdı" işareti gelince bu saldırı ikinci kez başlatılmaz.
+func _predict_attack(aim: float) -> void:
+	if snap.is_empty() or not snap.p.has(my_id) or snap.cd > 0.0 or over:
+		return
+	var me: Array = snap.p[my_id]
+	if not me[5]:
+		return
+	var now := Time.get_ticks_msec()
+	if now < pred_atk_next:
+		return
+	pred_atk_next = now + int(WEAPONS[me[8]].cd * 1000.0)
+	_start_atk(my_id, me[8], aim, true)
+
+
+## Herhangi bir saldırı animasyonu oynuyor mu (test ekran görüntüsü için).
+func _attack_active(now: int) -> bool:
+	for st in atk_anim.values():
+		if now - int(st.t) < 400:
+			return true
+	for t0 in u_atk.values():
+		if now - int(t0) < 400:
+			return true
+	return false
+
+
+## Anlık görüntüdeki görsel bitlerden olay üretir: yeni saldırı (yükselen kenar), vurulma, ölüm.
+func _vis_events(now: int) -> void:
+	var my_pos: Vector2 = view_pos.get(my_id, Vector2(-1000, -1000))
+	var my_swing := atk_anim.has(my_id) and now - int(atk_anim[my_id].t) < 400
+	for id in snap.p.keys():
+		var a: Array = snap.p[id]
+		var pos: Vector2 = view_pos.get(id, Vector2(a[0], a[1]))
+		var atk: bool = a[9] > 0.0
+		if atk and not atk_prev.get(id, false):
+			var st: Dictionary = atk_anim.get(id, {})
+			var cd_ms: float = WEAPONS[a[8]].cd * 1000.0
+			if not (st.get("pred", false) and float(now - int(st.t)) < cd_ms):  # tahminle zaten başladıysa tekrar başlatma
+				_start_atk(id, a[8], a[7], false)
+		atk_prev[id] = atk
+		var hit: bool = a[20]
+		if hit and not hit_prev.get(id, false):
+			hit_t[id] = now
+			fx_sparks.append([pos + Vector2(randf_range(-3, 3), randf_range(-7, -2)), now])
+			if id == my_id or (my_swing and pos.distance_to(my_pos) < 50.0):
+				shake_t = now  # vurdum / vuruldum: kısa kamera sarsıntısı
+		hit_prev[id] = hit
+		var alive: bool = a[5]
+		if alive_prev.get(id, false) and not alive:
+			fx_puffs.append([pos, now])
+			atk_anim.erase(id)
+		alive_prev[id] = alive
+	for a in snap_u:
+		var uid: int = a[0]
+		var upos: Vector2 = view_u.get(uid, Vector2(a[1], a[2]))
+		var atk: bool = a[8]
+		if atk and not u_atk_prev.get(uid, false):
+			u_atk[uid] = now
+			unit_flip[uid] = a[10]  # hedefe dön
+		u_atk_prev[uid] = atk
+		var hit: bool = a[9]
+		if hit and not u_hit_prev.get(uid, false):
+			u_hit_t[uid] = now
+			fx_sparks.append([upos + Vector2(randf_range(-2, 2), randf_range(-5, -1)), now])
+			if my_swing and upos.distance_to(my_pos) < 50.0:
+				shake_t = now
+		u_hit_prev[uid] = hit
+
+
+## Kahraman saldırı efekti: kılıç kesme izi, mızrak katmanı + saplama, yumruk/kılıç vuruş kıvılcımı.
+## Hepsi saldırı başındaki nişan açısına döner. Doku yoksa (Tiny Swords / kutu) basit çizgi yedeği.
+func _draw_attack_fx(id: int, pos: Vector2, team: int) -> void:
+	var st: Dictionary = atk_anim.get(id, {})
+	if st.is_empty():
+		return
+	var w: String = st.w
+	var since := float(Time.get_ticks_msec() - int(st.t))
+	var f := Art.atk_phase(w, since)
+	if f < 0:
+		return
+	var ang: float = st.aim
+	var dir := Vector2.from_angle(ang)
+	var flip := cos(ang) < 0.0
+	var chest := pos + Vector2(0, -2)
+	match w:
+		"sword":
+			if f >= 2 and not Art.draw_fx(self, "slash", f - 2, chest, ang, flip):
+				var sweep: float = [0.5, 1.0, 1.0, 1.0][f - 2]  # yedek: savrulan yay
+				var fade: float = [1.0, 1.0, 0.6, 0.3][f - 2]
+				var s0 := -60.0 if not flip else 60.0
+				var s1 := s0 + (120.0 if not flip else -120.0) * sweep
+				draw_arc(chest, 24.0, ang + deg_to_rad(minf(s0, s1)), ang + deg_to_rad(maxf(s0, s1)), 12, Color(1, 1, 1, 0.9 * fade), 2.0)
+				draw_arc(chest, 21.0, ang + deg_to_rad(minf(s0, s1)), ang + deg_to_rad(maxf(s0, s1)), 12, Color(0.7, 0.8, 1.0, 0.6 * fade), 1.0)
+			if f >= 3:
+				_draw_spark(chest + dir * 22.0, f - 3)
+		"spear":
+			var grip := pos + Vector2(0, -1) + dir * float(Art.SPEAR_GRIP[f])
+			var drawn := Art.draw_fx(self, "spear", 0, grip, ang, flip, Color.WHITE, "fx/spear_%s.png" % Art.TEAM_DIR[team])
+			if f >= 2 and f <= 4 and drawn:
+				Art.draw_fx(self, "thrust", f - 2, grip, ang, flip)
+			if not drawn and f >= 1 and f <= 4:  # yedek: ileri saplama çizgisi
+				draw_line(grip, grip + dir * 26.0, Color(1, 1, 1, 0.9), 1.5)
+				draw_circle(grip + dir * 27.0, 1.5 if f != 3 else 2.5, Color(1, 0.95, 0.6))
+		"fist":
+			if f >= 2:
+				_draw_spark(chest + dir * 12.0, f - 2)
+			elif not Art.custom and f == 1:
+				draw_line(chest, chest + dir * 12.0, Color(1, 1, 1, 0.8), 1.5)
+		"bow":
+			if f == 1 and not Art.custom:  # yedek: bırakma parlaması
+				draw_circle(chest + dir * 9.0, 2.0, Color(1, 0.95, 0.6, 0.9))
+
+
+## Vuruş kıvılcımı (4 kare). Doku yoksa sarı yıldız çizgileri.
+func _draw_spark(p: Vector2, frame: int) -> void:
+	if frame > 3 or Art.draw_fx(self, "spark", frame, p, 0.0, false):
+		return
+	var r := 2.0 + frame * 1.5
+	var c := Color(1.0, 0.9, 0.4, 1.0 - frame * 0.25)
+	for k in 4:
+		var d := Vector2.from_angle(k * PI / 2.0 + PI / 4.0 * float(frame % 2))
+		draw_line(p + d * r * 0.4, p + d * r, c, 1.0)
+
+
+## İsabet kıvılcımları ve ölüm bulutları (kahramanların üstüne).
+func _draw_hit_fx() -> void:
+	var now := Time.get_ticks_msec()
+	for e in fx_sparks:
+		_draw_spark(e[0], int(float(now - int(e[1])) / float(SPARK_MS) * 4.0))
+	for e in fx_puffs:
+		var k := float(now - int(e[1])) / float(PUFF_MS)
+		if not Art.draw_fx(self, "puff", mini(4, int(k * 5.0)), e[0] + Vector2(0, -3), 0.0, false):
+			draw_circle(e[0], 3.0 + k * 6.0, Color(0.8, 0.8, 0.8, 0.6 * (1.0 - k)))
 
 
 ## HUD yazısı: okunurluk için 1 piksel koyu gölge.
