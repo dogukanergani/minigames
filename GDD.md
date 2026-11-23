@@ -149,15 +149,24 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - 🧪 Sayılar taslak, oynayarak ayarlanır. Atılma şu an sunucuda işlenir (ping yüksekse kısa bir gecikme hissedilir, tahmin dışı).
 - ❓ Sonraki yetenek fikirleri: tuzak koyma, bayrağı geri çağırma, görünmezlik, birlik çağırma, iyileşme.
 
+## 8d. Savunma kuleleri ✅ (ilk sürüm, 🧪 sayılar taslak)
+
+- **Markette "Kule" kategorisi:** Okçu Kulesi (90 coin, stok 4, can 160, menzil 120, hasar 9, bekleme 0.8 sn, ok atar) ve Taş Kule (70 coin, stok 3, can 320, menzil 90, hasar 6, bekleme 1.0 sn). Kahraman başına **en fazla 2 kule** (`Game.TOWER_CAP`). Kule kalıcı envanter eşyasıdır, satılabilir (%70 iade).
+- **Yerleştirme aşaması:** Her savaşın başında, geri sayımdan önce **15 sn** (`PLACEMENT_TIME`). Kahramanlar hareket eder ama saldıramaz ve hasar almaz. **T** kule seçer, **sol tık** koyar, **sağ tık** geri alır (aşama bitene kadar taşınabilir), **Enter** hazır der. İmleci takip eden hayalet geçerli yerde yeşil, geçersizde kırmızı. Süre bitince ya da herkes hazırsa yerleştirilmeyenler otomatik yerleşir. Kimsenin kulesi yoksa aşama hiç başlamaz.
+- **Yerleştirme kuralları (sunucu doğrular):** Yalnızca kendi tarafının ilk %40'ı, üs bölgesi (`BASE_W`) hariç, bayrağa en az 40 birim, kuleler arası en az 40 birim, engel/duvar/kahraman/birimle çakışmaz. **Orta şerit (y = 360 ± 28) kuleye kapalı** (kule bayrak yolunu tıkamasın).
+- **Savaşta:** Kule en yakın düşman kahraman ya da birime ok atar. Çarpışma kutusu engeldir (kahraman ve birimler içinden geçemez). Düşman kahraman, birim, ok ve top kuleye hasar verir, birimler yakındaki düşman kuleye saldırır. **Yıkılan kule sonraki savaşta tam canla yeniden gelir** (kalıcı kayıp yok).
+- ❓ Açık: yerleştirme düşmana görünüyor, gizlensin mi? Kule hasar ve menzil sayıları denge testinden geçmedi (5v5'te 20 kule olan bot maçı Mavi için zor geçti). Kule sprite ve market ikonları henüz yok (şimdilik kutu çizimi): bkz. aşağıdaki spesifikasyon.
+- **Sprite spesifikasyonu (çizim oturumu için):** `assets/custom/buildings/tower_archer_{blue,red}.png` ve `tower_stone_{blue,red}.png`, 24x32; durumlar: bekleme 1 kare, hasarlı 1 kare (can %50 altı), ok atma 3 kare, yıkılma 4 kare. Market ikonları 16x16: `assets/custom/ui/icon_tower_archer.png`, `icon_tower_stone.png`. Kod şu an tek kare okuyor, animasyon için `Art`'ta kare kesme eklenecek.
+
 ## 8b. Kahraman + Birlik sistemi (yeni yön, 🧪 taslak)
 
 > Bu yön, savaş prototipinden sonra ortaya çıktı: oyuncular tek karakter yerine **kendi kahramanını** doğrudan yönetir, yanında marketten aldığı **birliği** komutla yönetir.
 >
-> **Durum: ilk sürüm uygulandı ✅** Birim türleri: **Kılıççı** (40 coin) ve **Okçu** (50 coin). Birlik sınırı 4, herkes **2 bedava Kılıççı** ile başlar. Birimler marketten alınır/satılır, savaşta ölünce kalıcı gider. Komutlar (Takip / Saldır / Bayrak) çalışır, birim zekâsı sunucuda. Diğer türler (Topçu, Kalkancı, Şifacı, Koşucu, Mühendis) henüz yok.
+> **Durum: ilk sürüm uygulandı ✅** Birim türleri: **Kılıççı** (40 coin) ve **Okçu** (50 coin). Birlik sınırı 4, herkes **2 bedava Kılıççı** ile başlar. Birimler marketten alınır/satılır. **Savaşta ölen birim bir süre sonra sahibinin üssünde yeniden doğar (kalıcı kayıp yok, bkz. aşağı).** Komutlar (Takip / Saldır / Bayrak) çalışır, birim zekâsı sunucuda. Türler: Kılıççı, Okçu, Kalkancı, Topçu (Şifacı sprite'ı hazır, oyunda henüz yok). Koşucu ve Mühendis henüz yok.
 
 **Temel fikir**
 - Her oyuncunun bir **kahramanı** (büyük, belirgin) ve en fazla **4 birimlik birliği** (küçük) var. 5v5'te takım başına 5 kahraman + 20 birim = 25, toplam 50 birim.
-- **Birimler marketten alınır** (coin ile). Birim ölünce **kalıcı olarak gider**, istenirse sonraki markette yenisi alınır. Böylece market merkezî olur: "kılıç mı alayım, topçu mu?" ikilemi.
+- **Birimler marketten alınır** (coin ile). ✅ **Ölen birim yeniden doğar:** savaş sırasında ölünce, türüne göre bir süre sonra sahibinin üssünde **tam canla** geri gelir (`UNIT_RESPAWN`: Kılıççı 12 sn, Okçu 14, Kalkancı 20, Topçu 28, Şifacı 16; 🧪 ayarlanır). Birim envanterden **silinmez** (eski "kalıcı kayıp" kuralı kalktı). Bunun sonucu: birim almak "bir kere öde, hep yenilen" hâline geldi, markette birim değeri biraz düştü; birlik sınırı (4) ve fiyatla dengelenir. HUD'da birlik sayısının altında "(N doğuyor)" yazar.
 - Kahramanı oyuncu doğrudan yönetir (WASD + fare). Birlik **komutla** yönetilir, tek tek kontrol yok.
 
 **Komutlar (taslak):** 1 = Takip (varsayılan, formasyonla izle, yakındakine saldır) · 2 = Saldır (imleci takip et, gördüğüne dal) · 3 = Bayrak (düşman bayrağına git / taşıyanı koru)

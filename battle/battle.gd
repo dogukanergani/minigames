@@ -398,6 +398,8 @@ func _spawn_stress(id: int, p: Dictionary) -> void:
 # ============================ SUNUCU SİMÜLASYONU ============================
 
 func _physics_process(delta: float) -> void:
+	if not multiplayer.has_multiplayer_peer():
+		return  # bağlantı koptu (host kapandı), sahne lobiye dönene kadar hiçbir şey yapma
 	if multiplayer.is_server() and started and not over:
 		var t0 := Time.get_ticks_usec()
 		_sim(delta)
@@ -1775,7 +1777,7 @@ func _bot_input() -> Dictionary:
 
 
 func _process(delta: float) -> void:
-	if snap.is_empty():
+	if snap.is_empty() or not multiplayer.has_multiplayer_peer():
 		return
 	var k := 1.0 - exp(-delta * 25.0)
 	for id in snap.p.keys():
