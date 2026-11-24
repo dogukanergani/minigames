@@ -17,6 +17,7 @@ const ITEMS := [
 	{"id": "unit_archer", "name": "Okçu", "kind": "Birim", "cost": 50, "stock": 6},
 	{"id": "unit_artillery", "name": "Topçu", "kind": "Birim", "cost": 80, "stock": 2},
 	{"id": "unit_shieldbearer", "name": "Kalkancı", "kind": "Birim", "cost": 60, "stock": 3},
+	{"id": "unit_healer", "name": "Şifacı", "kind": "Birim", "cost": 60, "stock": 3},
 	# Yetenekler: savaşta tuşla kullanılır (Boşluk = 1. yetenek, F = 2. yetenek). En fazla 2 tane taşınır.
 	{"id": "ability_dash", "name": "Atılma", "kind": "Yetenek", "cost": 60, "stock": 4},
 	{"id": "ability_burst", "name": "Kalkan Patlaması", "kind": "Yetenek", "cost": 80, "stock": 3},

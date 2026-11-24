@@ -100,9 +100,10 @@ const PLACE_ZONE := 0.4  # kendi tarafının ilk %40'ı (üs şeridi BASE_W hari
 const PLACEMENT_TIME := 15.0  # her savaşın başında kule yerleştirme süresi (sn)
 
 # Birim türleri (item id'leri ile aynı). UNIT_ORDER: anlık görüntüde kısa indeks.
-const UNIT_ORDER := ["unit_swordsman", "unit_archer", "unit_artillery", "unit_shieldbearer"]
+const UNIT_ORDER := ["unit_swordsman", "unit_archer", "unit_artillery", "unit_shieldbearer", "unit_healer"]
 # Ek alanlar: half = çarpışma/çizim yarı boyutu, aoe = alan hasarı yarıçapı, wmul = duvar hasar çarpanı,
-# armor = hasar azaltma, taunt = düşman birimleri önce buna saldırır.
+# armor = hasar azaltma, taunt = düşman birimleri önce buna saldırır,
+# heal = saniyede iyileştirme (saldırmaz), heal_range = iyileştirme menzili.
 const UNIT_TYPES := {
 	"unit_swordsman": {"name": "Kılıççı", "hp": 50.0, "speed": 62.0, "dmg": 8.0, "range": 12.0, "cd": 0.6, "ranged": false, "half": 3.0},
 	"unit_archer": {"name": "Okçu", "hp": 30.0, "speed": 56.0, "dmg": 7.0, "range": 90.0, "cd": 0.9, "ranged": true, "half": 3.0},
@@ -110,7 +111,10 @@ const UNIT_TYPES := {
 		"half": 4.0, "aoe": 24.0, "wmul": 3.0},
 	"unit_shieldbearer": {"name": "Kalkancı", "hp": 140.0, "speed": 50.0, "dmg": 5.0, "range": 12.0, "cd": 0.8, "ranged": false,
 		"half": 4.0, "armor": 0.4, "taunt": true},
+	"unit_healer": {"name": "Şifacı", "hp": 32.0, "speed": 58.0, "dmg": 0.0, "range": 70.0, "cd": 0.5, "ranged": false,
+		"half": 3.0, "heal": 6.0, "heal_range": 70.0},
 }
+const HEALER_FLEE := 55.0  # Şifacı bu yakınlıktaki düşmandan kaçar
 # Ölen birim kalıcı gitmez: sahibinin üssünde bu kadar sn sonra tam canla yeniden doğar (🧪 taslak).
 const UNIT_RESPAWN := {"unit_swordsman": 12.0, "unit_archer": 14.0, "unit_shieldbearer": 20.0,
 	"unit_artillery": 28.0, "unit_healer": 16.0}
@@ -127,6 +131,7 @@ var respawn_time := 5.0
 var countdown_time := 3.0
 var speed_mul := 1.0
 var placement_time := PLACEMENT_TIME
+var heal_total := 0.0  # sunucu: toplam iyileştirilen can (test günlüğü)
 var respawn_mul := 1.0  # birim yeniden doğma süresi çarpanı ("fast" testte kısalır)
 
 # --- Sunucu durumu ---
@@ -378,6 +383,11 @@ func _spawn_units(id: int, p: Dictionary) -> void:
 			continue
 		_add_unit(id, p, item_id, slot, false)
 		slot += 1
+	for a in OS.get_cmdline_user_args():  # test: `givehealer=N` herkese N bedava Şifacı verir (markete bakmadan)
+		if a.begins_with("givehealer="):
+			for k in mini(int(a.get_slice("=", 1)), 4 - slot):
+				_add_unit(id, p, "unit_healer", slot, false)
+				slot += 1
 
 
 func _add_unit(id: int, p: Dictionary, item_id: String, slot: int, fake: bool, at := Vector2.INF) -> void:
@@ -524,6 +534,8 @@ func _finish(winner: int) -> void:
 	if over:
 		return
 	over = true
+	if is_auto and heal_total > 0.0:
+		print("[şifacı] toplam iyileşme=%.0f can" % heal_total)
 	_battle_over.rpc(winner, scores, losses)
 
 
@@ -753,6 +765,9 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 	if u.sep_t <= 0.0:
 		u.sep_t = 0.12
 		_unit_separation(uid, u)
+	if t.has("heal"):
+		_healer_update(uid, u, t, owner_p, dt, spd)
+		return
 	if u.tkind != 0 and not _target_valid(u):
 		u.tkind = 0
 	if u.retarget <= 0.0:
@@ -780,6 +795,70 @@ func _update_unit(uid: int, u: Dictionary, dt: float) -> void:
 			_unit_step(u, owner_p.cur, spd, dt, 10.0)
 		2:  # Bayrak: düşman bayrağına (kendi bayrağı çalındıysa taşıyanı kovala)
 			_unit_step(u, _flag_goal(u.team), spd, dt, 12.0)
+
+
+## Şifacı: saldırmaz. Menzildeki en az canlı dostu (kahraman ya da birim) iyileştirir, yaralıya yaklaşır,
+## düşman yakınsa kaçar, yoksa sahibini formasyonda izler. İyileşme sunucuda uygulanır.
+func _healer_update(uid: int, u: Dictionary, t: Dictionary, owner_p: Dictionary, dt: float, spd: float) -> void:
+	# Yakın düşman: onun ters yönüne kaç
+	var flee := Vector2.ZERO
+	for hid in pl.keys():
+		var h: Dictionary = pl[hid]
+		if h.team != u.team and h.alive and u.pos.distance_to(h.pos) < HEALER_FLEE:
+			flee += (u.pos - h.pos).normalized()
+	for eid in units.keys():
+		var e: Dictionary = units[eid]
+		if e.team != u.team and u.pos.distance_to(e.pos) < HEALER_FLEE:
+			flee += (u.pos - e.pos).normalized()
+	if not flee.is_zero_approx():
+		_unit_move(u, flee.normalized() * spd * 1.1 * dt)
+		return
+	# Hedef: en düşük can oranlı yaralı dost (görüş 1.6x menzil)
+	if u.retarget <= 0.0:
+		u.retarget = 0.25
+		var best := 2.0
+		u.tkind = 0
+		for hid in pl.keys():
+			var h: Dictionary = pl[hid]
+			if h.team != u.team or not h.alive or h.hp >= h.max_hp:
+				continue
+			var f: float = h.hp / h.max_hp
+			if f < best and u.pos.distance_to(h.pos) <= t.heal_range * 1.6:
+				best = f
+				u.tkind = 1
+				u.tid = hid
+		for oid in units.keys():
+			var o: Dictionary = units[oid]
+			if oid == uid or o.team != u.team or o.hp >= o.max_hp:
+				continue
+			var f2: float = o.hp / o.max_hp
+			if f2 < best and u.pos.distance_to(o.pos) <= t.heal_range * 1.6:
+				best = f2
+				u.tkind = 2
+				u.tid = oid
+	if u.tkind == 1 and (not pl.has(u.tid) or not pl[u.tid].alive or pl[u.tid].hp >= pl[u.tid].max_hp):
+		u.tkind = 0
+	elif u.tkind == 2 and (not units.has(u.tid) or units[u.tid].hp >= units[u.tid].max_hp):
+		u.tkind = 0
+	if u.tkind != 0:
+		var tp: Vector2 = pl[u.tid].pos if u.tkind == 1 else units[u.tid].pos
+		if u.pos.distance_to(tp) <= t.heal_range:
+			if u.cd <= 0.0:
+				u.cd = t.cd
+				u.atk_vis = ATK_VIS  # görsel: yeşil + işareti
+				var amount: float = t.heal * t.cd * (RALLY_DMG if owner_p.rally_t > 0.0 else 1.0)
+				var tgt: Dictionary = pl[u.tid] if u.tkind == 1 else units[u.tid]
+				var before: float = tgt.hp
+				tgt.hp = minf(tgt.max_hp, tgt.hp + amount)
+				heal_total += tgt.hp - before
+			_unit_move(u, u.sep * spd * 0.3 * dt)
+			return
+		_unit_step(u, tp, spd, dt, t.heal_range * 0.7)
+		return
+	# Yaralı yok: sahibini formasyonda izle
+	var ring := 22.0 + float(u.slot / 4) * 10.0
+	var slot_pos: Vector2 = owner_p.pos + Vector2.from_angle(float(u.slot % 4) * TAU / 4.0 + 0.5) * ring
+	_unit_step(u, slot_pos, spd, dt, 5.0)
 
 
 ## Yakındaki dost birimlerden uzaklaşma vektörü (sep). Her 0.12 sn'de bir hesaplanır, ucuzdur.
@@ -2068,6 +2147,9 @@ func _draw() -> void:
 				2:  # topçu: büyük, ortasında koyu namlu + sarı uç
 					draw_rect(Rect2(upos.x - 1.0, upos.y - 5.0, 2.0, 6.0), Color(0.1, 0.1, 0.12))
 					draw_rect(Rect2(upos.x - 1.0, upos.y - 6.0, 2.0, 1.5), Color(1.0, 0.8, 0.3))
+				4:  # şifacı: ortada yeşil artı
+					draw_rect(Rect2(upos.x - 0.5, upos.y - 2.0, 1.0, 4.0), Color(0.5, 1.0, 0.5))
+					draw_rect(Rect2(upos.x - 2.0, upos.y - 0.5, 4.0, 1.0), Color(0.5, 1.0, 0.5))
 				3:  # kalkancı: kalın beyaz çerçeve + ortada kalkan çizgisi
 					draw_rect(ur.grow(1.0), Color(0.92, 0.92, 0.95), false, 2.0)
 					draw_rect(Rect2(upos.x - 0.5, upos.y - 3.0, 1.0, 6.0), Color(0.92, 0.92, 0.95))
@@ -2076,6 +2158,12 @@ func _draw() -> void:
 				draw_rect(ur.grow(1.5), Color(1, 1, 0.8, 0.9), false, 1.0)
 			if now_u - int(u_hit_t.get(a[0], -1000)) < HIT_FLASH_MS:
 				draw_rect(ur, Color(1, 1, 1, 0.85))
+		if a[6] == 4 and Time.get_ticks_msec() - int(u_atk.get(a[0], -1000)) < 350:  # iyileştirme: yeşil + yükselir
+			var hk2: float = float(Time.get_ticks_msec() - int(u_atk[a[0]])) / 350.0
+			var hc := Color(0.4, 1.0, 0.45, 1.0 - hk2)
+			var hy: float = upos.y - uh - 6.0 - hk2 * 5.0
+			draw_rect(Rect2(upos.x - 0.5, hy - 2.0, 1.0, 4.0), hc)
+			draw_rect(Rect2(upos.x - 2.0, hy - 0.5, 4.0, 1.0), hc)
 		if a[3] < a[4]:
 			var bar_y := upos.y - uh - 3.0 - (8.0 if sprite_drawn else 0.0)
 			draw_rect(Rect2(upos.x - uh, bar_y, uh * 2.0 * a[3] / a[4], 1.0), Color(0.3, 1.0, 0.3))
