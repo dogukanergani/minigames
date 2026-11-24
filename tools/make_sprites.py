@@ -264,6 +264,7 @@ def brows(im, xl, xr, ey, up=3):
 # Saldırı kareleri 48x48 tuvaldedir (32'lik karakter ortada, ATK_PAD kadar boşluk): kılıç ve efekt çerçeveye sığar.
 HERO_ATK = {("warrior", "attack"): 6, ("warrior", "punch"): 4, ("lancer", "attack"): 6, ("archer", "attack"): 6}
 ATK_PAD = 8
+LANCER_PAD = 16  # mızrakçı saldırısı 64x64 tuval: yatay mızrak çerçeveye sığsın
 # Kare başına poz: (gövde eğimi: + öne / - geri, çömelme, (arka ayak, ön ayak) kayması, pelerin savrulması)
 ATK_POSE = {
 	("warrior", "attack"): [(-2, 1, (-2, 1), 0), (-3, 2, (-2, 2), 0), (2, 0, (-3, 3), 3), (3, 1, (-3, 4), 4),
@@ -281,8 +282,8 @@ SWORD_SEQ = [((-1, -11), -125, None, 3, False), ((-2, -17), -168, None, 4, False
 	((1, 0), 55, (5, 55, 0.5), -2, False), ((0, -2), -72, None, 0, False)]
 # Yumruk: (el kayması, kol uzanmış mı, kıvılcım, kalkan kayması)
 PUNCH_SEQ = [((-6, -3), False, False, 2), ((5, -3), True, False, -2), ((6, -3), True, True, -3), ((1, -1), False, False, 0)]
-# Mızrak: ön elin karakter ortasından ileri uzaklığı (sanat pikseli). Mızrak oyunda bu noktadan nişan yönüne
-# döndürülerek ayrı katman olarak çizilir (fx/spear_*.png); her yöne saplama doğru görünür.
+# Mızrak: ön elin karakter ortasından ileri uzaklığı (sanat pikseli). Mızrak bu noktada yatay tutulur ve
+# silah katmanında (wpn_spear_attack.png) gövdeyle aynı karede çizilir; saplama efekti (fx/thrust) buradan başlar.
 SPEAR_GRIP = [-3, -6, 9, 13, 11, 5]
 # Yay: (kiriş çekme, ok durumu, yay kayması, parlama). 0 tam gerili, 1 bırakma (ok çıkar), 2 geri tepme,
 # 3 kol geride, 4 sadaktan ok alma, 5 yeni ok yerleşir.
@@ -317,10 +318,33 @@ def dust(im, x, y, k=1.0, seed=3):
 		im.blend(int(round(x + dx)), int(round(y + dy)), (214, 196, 160, 170))
 
 
-def hero_frame(kind, team, anim, f):
+def atk_pad(kind):
+	"""Saldırı tuvalinin kenar boşluğu: mızrak ileri uzandığı için mızrakçıda daha geniş (64x64)."""
+	return LANCER_PAD if kind == "lancer" else ATK_PAD
+
+
+def spear_h(im, gx, gy, T):
+	"""Saldırıdaki yatay mızrak (sağa bakar): ön el (gx, gy) ortada; sap, yaprak uç, takım flaması."""
+	part(im, line(gx - 15, gy, gx + 11, gy, 1), WOOD_D)
+	fill(im, line(gx - 13, gy, gx + 10, gy, 1), WOOD)
+	tip = poly([(gx + 11, gy - 2), (gx + 15, gy - 1.5), (gx + 19, gy + 0.5), (gx + 15, gy + 2.5), (gx + 11, gy + 3)])
+	part(im, tip, STEEL)
+	fill(im, line(gx + 12, gy, gx + 17, gy, 1), WHITE)
+	fill(im, {(gx + 11, gy), (gx + 10, gy)}, GOLD_D)
+	part(im, rect(gx - 16, gy - 1, gx - 15, gy + 1), STEEL_D)  # dip başlığı
+	flag = {(gx + 5, gy + 1), (gx + 6, gy + 1), (gx + 7, gy + 1), (gx + 8, gy + 1), (gx + 5, gy + 2), (gx + 6, gy + 2),
+		(gx + 7, gy + 2), (gx + 5, gy + 3), (gx + 6, gy + 3), (gx + 6, gy + 4)}
+	part(im, flag, T["m"])
+	fill(im, {(gx + 5, gy + 1), (gx + 6, gy + 1)}, T["l"])
+
+
+def hero_frame(kind, team, anim, f, wpn=True):
+	"""Kahraman karesi. `wpn=False`: SİLAHSIZ gövde (eller, kollar, poz aynı; kılıç/kalkan, mızrak, yay ve ok yok).
+	Oyunda gövde ve silah ayrı katmandır: silah şeridi = (silahlı kare) - (silahsız gövde) farkı (bkz. layer_diff)."""
 	T = TEAMS[team]
 	atk = anim in ("attack", "punch")
-	im = Img(HS + 2 * ATK_PAD, HS + 2 * ATK_PAD, ATK_PAD, ATK_PAD) if atk else Img(HS, HS)
+	pad = atk_pad(kind)
+	im = Img(HS + 2 * pad, HS + 2 * pad, pad, pad) if atk else Img(HS, HS)
 	bob = 0
 	lean = 0
 	legs = ((0, 0), (0, 0))
@@ -379,36 +403,42 @@ def hero_frame(kind, team, anim, f):
 		elif anim == "punch":
 			shdx = PUNCH_SEQ[f][3]
 		scx = cx - 7 + shdx
-		sh = circ(scx, 21 + bob, 4)  # sol kolda dikenli kalkan
-		part(im, sh, T["d"])
-		fill(im, circ(scx, 21 + bob, 2.6), T["m"])
-		fill(im, circ(scx, 21 + bob, 1), STEEL)
-		part(im, {(scx, 16 + bob), (scx, 15 + bob)}, STEEL)
+		# kalkan kılıçla birlikte silah katmanındadır (kılıç + kalkan takımı); yumrukta iki el de boş
+		if wpn and anim != "punch":
+			sh = circ(scx, 21 + bob, 4)  # sol kolda dikenli kalkan
+			part(im, sh, T["d"])
+			fill(im, circ(scx, 21 + bob, 2.6), T["m"])
+			fill(im, circ(scx, 21 + bob, 1), STEEL)
+			part(im, {(scx, 16 + bob), (scx, 15 + bob)}, STEEL)
+		else:  # boş sol el: gardda sıkılı yumruk (kalkanın altında kalır)
+			part(im, circ(scx + 1, 20 + bob, 1.7), STEEL_D)
+			fill(im, {(scx, 19 + bob)}, STEEL)
 		if anim == "attack":
 			(hdx_, hdy_), ang, sm, _, spk = SWORD_SEQ[f]
 			hx, hy = hx + hdx_, hy + hdy_
-			if sm:
+			if sm and wpn:  # savuruş izi kılıcın parçası: silah katmanında
 				smear(im, hx, hy, sm[0], sm[1], 16, 6.5, sm[2])
 			arm = line(cx + 4, 16 + bob, hx, hy, 2)  # kılıç kolu (omuzdan ele)
+			tip = None
 			if f in (0, 1):  # başın üstünde: kol + kılıç kafadan sonra
-				post.append(lambda a=arm, x=hx, y=hy, g=ang: (part(im, a, T["m"]), blade(im, x, y, g, 13),
-					part(im, circ(x, y, 1.7), STEEL_D)))
+				def raised(a=arm, x=hx, y=hy, g=ang):
+					part(im, a, T["m"])
+					if wpn:
+						blade(im, x, y, g, 13)
+					part(im, circ(x, y, 1.7), STEEL_D)
+				post.append(raised)
 				glove = False
-				tip = (0, 0)
 			else:
 				part(im, arm, T["m"])
-				tip = blade(im, hx, hy, ang, 13)
-			if spk:  # uçta parıltı (asıl vuruş kıvılcımı oyunda nişan yönünde, fx/spark.png)
+				if wpn:
+					tip = blade(im, hx, hy, ang, 13)
+			if spk and tip:  # uçta parıltı (asıl vuruş kıvılcımı oyunda nişan yönünde, fx/spark.png)
 				tx_, ty_ = int(round(tip[0])), int(round(tip[1]))
 				fill(im, {(tx_, ty_), (tx_ + 1, ty_), (tx_, ty_ - 1), (tx_, ty_ + 1)}, WHITE)
 			if f in (2, 3):
 				dust(im, lx - 5, 28, 1.0 if f == 3 else 0.6, seed=f)
 		elif anim == "punch":
 			(hdx_, hdy_), ext, spk, _ = PUNCH_SEQ[f]
-			# kın: kılıç belde (yumrukla dövüşürken çekilmez)
-			part(im, line(cx + 1, 22 + bob, cx - 5, 27 + bob, 2), WOOD_D)
-			part(im, line(cx + 1, 22 + bob, cx + 3, 20 + bob, 1), STEEL_D)
-			fill(im, {(cx + 1, 21 + bob), (cx + 2, 23 + bob)}, GOLD_D)
 			hx, hy = hx + hdx_, hy + hdy_
 			if ext:
 				speed_lines(im, cx - 4, hx - 2, (hy - 2, hy + 2), seed=f)
@@ -423,7 +453,7 @@ def hero_frame(kind, team, anim, f):
 			sw = (hx, hy - 1, hx + 5, hy - 13)
 		else:
 			sw = (hx, hy - 1, hx + 2, hy - 15)
-		if not atk:
+		if not atk and wpn:
 			part(im, line(sw[0], sw[1], sw[2], sw[3], 3), STEEL_D)
 			fill(im, line(sw[0], sw[1], sw[2], sw[3], 2), STEEL)
 			fill(im, line(sw[0] - 1, sw[1], sw[2] - 1, sw[3], 1), WHITE)
@@ -435,11 +465,17 @@ def hero_frame(kind, team, anim, f):
 			part(im, line(sw[0] - 2, sw[1] + 1, sw[0] + 2, sw[1] - 1, 1), GOLD_D)
 	elif kind == "lancer":
 		if anim == "attack":
-			glove = False  # mızrak ve eller oyunda ayrı katman (fx/spear_*.png), nişana döner
+			glove = False  # iki el mızrağı tutar (gövdede), mızrak silah katmanında
 			if f in (2, 3):  # atılma: gövdenin arkasında hız çizgileri, arka ayakta toz
 				speed_lines(im, cx - 15, cx - 7, (14 + bob, 18 + bob, 23 + bob), (236, 242, 255, 170), seed=f)
 				dust(im, lx - 6, 28, 1.0, seed=f + 5)
-		else:
+			gx, gy = 16 + SPEAR_GRIP[f], 21 + bob
+			if wpn:
+				spear_h(im, gx, gy, T)
+			for ex in (gx - 7, gx):  # arka el, ön el
+				part(im, circ(ex, gy, 1.7), STEEL_D)
+				fill(im, {(ex - 1, gy - 1)}, STEEL)
+		elif wpn:
 			if anim == "run":
 				sp = (hx - 8, hy + 7, hx + 6, hy - 8)
 			else:
@@ -455,37 +491,39 @@ def hero_frame(kind, team, anim, f):
 		arc = [i * 0.05 for i in range(-32, 33)]
 		bow = {(int(round(bow_x + math.cos(a) * bend - back)), int(round(hy + math.sin(a) * (10 - back * 0.7)))) for a in arc} 			if atk else {(int(bow_x + math.cos(a) * 10 * 0.5), int(hy + math.sin(a) * 10)) for a in arc}
 		bow |= shift(bow, 1, 0)
-		part(im, bow, WOOD_D)
 		if atk:
 			top = (int(round(bow_x - back)), int(round(hy - 10 + back * 0.7)))
 			bot = (int(round(bow_x - back)), int(round(hy + 10 - back * 0.7)))
 		else:
 			top, bot = (int(bow_x + math.cos(-1.6) * 5), hy - 10), (int(bow_x + math.cos(1.6) * 5), hy + 10)
-		part(im, {(top[0] + 1, top[1] - 1), (bot[0] + 1, bot[1] + 1)}, STEEL)  # dikenli uçlar
 		sx = hx - pull + 1 + bdx
-		if atk and f == 2:  # bırakmadan sonra titreyen kiriş
-			fill(im, line(top[0], top[1], sx + 1, hy - 4, 1) | line(sx + 1, hy - 4, sx, hy + 3, 1) | line(sx, hy + 3, bot[0], bot[1], 1), WHITE)
-		else:
-			fill(im, line(top[0], top[1], sx, hy, 1), WHITE)
-			fill(im, line(sx, hy, bot[0], bot[1], 1), WHITE)
+		if wpn:  # yay, kiriş, ok ve bırakma parlaması: silah katmanı
+			part(im, bow, WOOD_D)
+			part(im, {(top[0] + 1, top[1] - 1), (bot[0] + 1, bot[1] + 1)}, STEEL)  # dikenli uçlar
+			if atk and f == 2:  # bırakmadan sonra titreyen kiriş
+				fill(im, line(top[0], top[1], sx + 1, hy - 4, 1) | line(sx + 1, hy - 4, sx, hy + 3, 1) | line(sx, hy + 3, bot[0], bot[1], 1), WHITE)
+			else:
+				fill(im, line(top[0], top[1], sx, hy, 1), WHITE)
+				fill(im, line(sx, hy, bot[0], bot[1], 1), WHITE)
+			if arrow == "nock":
+				ax = bow_x + int(bend) + 3  # ok ucu yayın önünde
+				part(im, line(sx, hy, ax, hy, 1), WOOD_D, ol=None)
+				part(im, {(ax + 1, hy), (ax, hy - 1), (ax, hy + 1), (ax + 2, hy)}, STEEL)
+				fill(im, {(sx - 1, hy - 1), (sx - 1, hy + 1)}, WHITE)  # tüy
+			elif arrow == "reach":  # sadaktan çekilen yeni ok
+				part(im, line(cx - 6, 9 + bob, cx - 1, 13 + bob, 1), WOOD_D, ol=None)
+			if flash:  # bırakma: yayın önünde parlama ve ok izi
+				speed_lines(im, bow_x + 4, bow_x + 18, (hy,), (255, 250, 220, 230), seed=9)
+				speed_lines(im, bow_x + 6, bow_x + 15, (hy - 2, hy + 2), (240, 246, 255, 150), seed=10)
+				spark_star(im, bow_x + 6, hy, 3)
+		# çeken / ok alan el gövdenin parçası
 		if arrow == "nock":
-			ax = bow_x + int(bend) + 3  # ok ucu yayın önünde
-			part(im, line(sx, hy, ax, hy, 1), WOOD_D, ol=None)
-			part(im, {(ax + 1, hy), (ax, hy - 1), (ax, hy + 1), (ax + 2, hy)}, STEEL)
-			fill(im, {(sx - 1, hy - 1), (sx - 1, hy + 1)}, WHITE)  # tüy
 			part(im, circ(sx - 1, hy, 1.4), STEEL_D)  # çeken el
-		elif arrow == "reach":  # el sadakta: yeni ok çekiliyor
-			part(im, line(cx - 6, 9 + bob, cx - 1, 13 + bob, 1), WOOD_D, ol=None)
+		elif arrow == "reach":  # el sadakta
 			part(im, circ(cx - 3, 12 + bob, 1.4), STEEL_D)
 		elif atk:
 			hb = (hx - 6, hy - 3) if f == 3 else (hx - 5, hy)  # bırakan el geride kalır
 			part(im, circ(hb[0], hb[1], 1.4), STEEL_D)
-		if flash:  # bırakma: yayın önünde parlama ve ok izi
-			speed_lines(im, bow_x + 4, bow_x + 18, (hy,), (255, 250, 220, 230), seed=9)
-			speed_lines(im, bow_x + 6, bow_x + 15, (hy - 2, hy + 2), (240, 246, 255, 150), seed=10)
-			spark_star(im, bow_x + 6, hy, 3)
-		if anim == "attack" and f == 1:
-			pass
 	if glove:
 		part(im, circ(hx, hy, 1.7), STEEL_D)  # zırh eldiveni
 	# kafa
@@ -1023,7 +1061,6 @@ def boom_strip():
 # isabet yayı ±60° (battle.gd _attack / _in_arc): kesme izi yarıçapı 40 px ≈ 27 birim, ±75° (biraz taşkın).
 SLASH = 96   # kesme izi karesi 96x96, pivot (48, 48) = kahramanın göğsü
 THRUST_W, THRUST_H, THRUST_PX = 64, 20, 12   # saplama efekti, pivot (12, 10) = mızrağı tutan el
-SPEAR_W, SPEAR_H, SPEAR_PX = 60, 11, 18      # mızrak katmanı, pivot (18, 5) = ön el
 
 
 def slash_strip():
@@ -1068,28 +1105,6 @@ def thrust_strip():
 			fill(im, {(56, py), (57, py - 1), (57, py + 1), (58, py)}, (255, 236, 150, 255))
 		frames.append(im)
 	return strip(frames)
-
-
-def spear_sprite(team):
-	"""Mızrakçının saldırı mızrağı (sap, yaprak uç, takım flaması, iki zırh eldiveni). Pivot = ön el."""
-	T = TEAMS[team]
-	im = Img(SPEAR_W, SPEAR_H)
-	y = SPEAR_H // 2
-	part(im, line(2, y, 46, y, 1), WOOD_D)
-	fill(im, line(4, y, 44, y, 1), WOOD)
-	tip = poly([(44, y - 3), (52, y - 2), (58, y), (52, y + 2), (44, y + 3)])
-	part(im, tip, STEEL)
-	fill(im, line(46, y - 1, 56, y, 1), WHITE)
-	fill(im, {(44, y), (45, y)}, GOLD_D)
-	part(im, rect(1, y - 1, 2, y + 1), STEEL_D)  # dip başlığı
-	flag = {(38, y + 1), (39, y + 1), (40, y + 1), (41, y + 1), (38, y + 2), (39, y + 2), (40, y + 2),
-		(38, y + 3), (39, y + 3), (39, y + 4)}
-	part(im, flag, T["m"])
-	fill(im, {(38, y + 1), (39, y + 1)}, T["l"])
-	for gx in (SPEAR_PX - 7, SPEAR_PX):  # iki el
-		part(im, circ(gx, y, 1.8), STEEL_D)
-		fill(im, {(gx - 1, y - 1)}, STEEL)
-	return im
 
 
 def spark_strip():
@@ -1188,7 +1203,7 @@ FONT = {
 	"2": "110001010100111", "3": "110001010001110", "4": "101101111001001", "5": "111100110001110",
 	"6": "011100111101111", "7": "111001010010010", "8": "111101111101111", "9": "111101111001110",
 	"-": "000000111000000", ":": "000010000010000", " ": "000000000000000", "/": "001001010100100",
-	"(": "010100100100010", ")": "010001001001010", ".": "000000000000010", "x": "000101010101000",
+	"+": "000010111010000", "(": "010100100100010", ")": "010001001001010", ".": "000000000000010", "x": "000101010101000",
 }
 
 
@@ -1214,22 +1229,53 @@ BG = (70, 130, 74, 255)
 PANEL = (36, 40, 56, 255)
 
 
+def layer_diff(full, body):
+	"""Silah katmanı = silahlı karenin silahsız gövdeden farklı pikselleri. Gövde + katman üst üste = silahlı kare
+	(baş kılıcın önündeyse o pikseller aynıdır, katmana girmez: çizim sırası korunur)."""
+	o = Img(full.w, full.h)
+	bad = 0
+	for i, (a, b) in enumerate(zip(full.p, body.p)):
+		if a != b:
+			o.p[i] = a
+			if a[3] == 0:
+				bad += 1  # katman bir pikseli silemez: gövdede olup silahlı karede olmayan piksel
+	return o, bad
+
+
+# silah -> (gövde, gövdenin saldırı animasyonu). Yumrukta silah katmanı yoktur.
+HERO_WEAPON = {"sword": ("warrior", "attack"), "spear": ("lancer", "attack"), "bow": ("archer", "attack")}
+
+
 def build():
 	files = {}
-	# kahraman / birim şeritleri
+	bad_total = 0
+	# kahraman: silahsız gövde (hero_*), silah katmanı (wpn_*) ve birleşik (eski adlar: minigame'ler, önizleme)
 	for team in TEAMS:
-		for kind, _ in HEROES:
-			for anim, n in ANIMS.items():
-				files["units/%s/%s_%s.png" % (team, kind, anim)] = strip([hero_frame(kind, team, anim, f) for f in range(n)])
-		for (kind, anim), n in HERO_ATK.items():  # saldırı: 48x48 kareler
-			files["units/%s/%s_%s.png" % (team, kind, anim)] = strip([hero_frame(kind, team, anim, f) for f in range(n)])
+		for weapon, (kind, atk_anim) in HERO_WEAPON.items():
+			for anim, n in list(ANIMS.items()) + [(atk_anim, HERO_ATK[(kind, atk_anim)])]:
+				full = [hero_frame(kind, team, anim, f, True) for f in range(n)]
+				body = [hero_frame(kind, team, anim, f, False) for f in range(n)]
+				layer = []
+				for fu, bo in zip(full, body):
+					lay, bad = layer_diff(fu, bo)
+					layer.append(lay)
+					bad_total += bad
+				files["units/%s/%s_%s.png" % (team, kind, anim)] = strip(full)
+				files["units/%s/hero_%s_%s.png" % (team, kind, anim)] = strip(body)
+				files["units/%s/wpn_%s_%s.png" % (team, weapon, anim)] = strip(layer)
+		n = HERO_ATK[("warrior", "punch")]  # yumruk: yalnızca silahsız gövde
+		body = strip([hero_frame("warrior", team, "punch", f, False) for f in range(n)])
+		files["units/%s/warrior_punch.png" % team] = body
+		files["units/%s/hero_warrior_punch.png" % team] = body
+	if bad_total:
+		print("UYARI: silah katmanında silinemeyen %d piksel (gövde silahlı karede görünmeyen şey çiziyor)" % bad_total)
+	for team in TEAMS:
 		for kind, _ in UNITS:
 			for anim in ("idle", "run"):
 				n = ANIMS[anim]
 				files["units/%s/u_%s_%s.png" % (team, kind, anim)] = strip([unit_frame(kind, team, anim, f) for f in range(n)])
 			if kind in UNIT_ATK:  # saldırı: 32x32 kareler
 				files["units/%s/u_%s_attack.png" % (team, kind)] = strip([unit_frame(kind, team, "attack", f) for f in range(UNIT_ATK[kind])])
-		files["fx/spear_%s.png" % team] = spear_sprite(team)
 		files["buildings/%s_castle.png" % team] = castle(team)
 		files["buildings/%s_flag.png" % team] = flag_strip(team)
 	files["terrain/grass.png"] = strip([grass_tile(s) for s in (1, 2, 3)])
@@ -1378,16 +1424,31 @@ def blit_a(dst, src, ox, oy, fx=0, fw=None):
 				dst.blend(ox + x, oy + y, c)
 
 
-def hero_comp(files, team, kind, anim, weapon, f, with_fx=True):
-	"""Oyundaki gibi birleşik kare (nişan sağa): kahraman + efekt katmanları. 76x84 tuval."""
-	C = Img(100, 84)
-	X0, Y0 = 4, 18
-	st = files["units/%s/%s_%s.png" % (team, kind, anim)]
-	fs = st.h
-	blit_a(C, st, X0, Y0, f * fs, fs)
-	if not with_fx:
+WEAPON_BODY = {"fist": "warrior", "sword": "warrior", "spear": "lancer", "bow": "archer"}  # art.gd WEAPON_SPRITE
+COMP_W, COMP_H, COMP_CX, COMP_CY = 112, 96, 36, 50  # birleşik önizleme tuvali, karakter ortası
+
+
+def hero_layers(files, team, weapon, anim):
+	"""Oyundaki gibi katmanlar (art.gd hero_layers): [silahsız gövde, silah şeridi | None]."""
+	kind = WEAPON_BODY[weapon]
+	banim = ("punch" if weapon == "fist" else "attack") if anim == "attack" else anim
+	body = files["units/%s/hero_%s_%s.png" % (team, kind, banim)]
+	lay = None if weapon == "fist" else files["units/%s/wpn_%s_%s.png" % (team, weapon, anim)]
+	return body, lay
+
+
+def hero_comp(files, team, weapon, anim, f, with_fx=True, with_wpn=True):
+	"""Oyundaki gibi birleşik kare (nişan sağa): gövde + silah katmanı + efekt katmanları. 112x96 tuval."""
+	C = Img(COMP_W, COMP_H)
+	body, lay = hero_layers(files, team, weapon, anim)
+	fs = body.h
+	X0, Y0 = COMP_CX - fs // 2, COMP_CY - fs // 2
+	blit_a(C, body, X0, Y0, f * fs, fs)
+	if lay is not None and with_wpn:
+		blit_a(C, lay, X0, Y0, f * fs, fs)
+	if not with_fx or anim != "attack":
 		return C
-	px, py = X0 + 24, Y0 + 27  # göğüs (oyunda pos + (0, -2))
+	px, py = COMP_CX, COMP_CY + 3  # göğüs (oyunda pos + (0, -2))
 	if weapon == "sword":
 		if f >= 2:
 			sl = files["fx/slash.png"]
@@ -1396,9 +1457,7 @@ def hero_comp(files, team, kind, anim, weapon, f, with_fx=True):
 			sp = files["fx/spark.png"]
 			blit_a(C, sp, px + 33 - 8, py - 8, (f - 3) * 16, 16)
 	elif weapon == "spear":
-		g = SPEAR_GRIP[f]
-		gx, gy = X0 + 24 + g, Y0 + 29
-		blit_a(C, files["fx/spear_%s.png" % team], gx - SPEAR_PX, gy - SPEAR_H // 2)
+		gx, gy = COMP_CX + SPEAR_GRIP[f], COMP_CY + 5
 		if 2 <= f <= 4:
 			blit_a(C, files["fx/thrust.png"], gx - THRUST_PX, gy - THRUST_H // 2, (f - 2) * THRUST_W, THRUST_W)
 	elif weapon == "fist":
@@ -1429,10 +1488,11 @@ def preview_attacks(files):
 			("lancer", "attack", "spear", "mizrak", "MIZRAK"), ("archer", "attack", "bow", "yay", "YAY"),
 			("warrior", "punch", "fist", "yumruk", "YUMRUK")):
 		n = HERO_ATK[(kind, anim)]
-		cw = 100 * K + 10
-		sh = page(max(n * cw + 12, 900), 2 * (48 * K + 84 * K + 70) + 300,
-			"SALDIRI %s - %s_%s.PNG (48X48 X %d KARE) - USTTE EFEKTSIZ SPRITE, ALTTA OYUNDAKI GIBI EFEKTLI (NISAN SAGA) - 4 KAT"
-			% (label, kind.upper(), anim.upper(), n))
+		fs = HS + 2 * atk_pad(kind)
+		cw = COMP_W * K + 10
+		sh = page(max(n * cw + 12, 2 * n * (COMP_W * 2 + 4) + 40), 2 * (fs * K + COMP_H * K + 70) + COMP_H * 2 + 60,
+			"SALDIRI %s - %s_%s.PNG (%dX%d X %d KARE, GOVDE + SILAH BIRLESIK) - USTTE EFEKTSIZ, ALTTA OYUNDAKI GIBI EFEKTLI (NISAN SAGA) - 4 KAT"
+			% (label, kind.upper(), anim.upper(), fs, fs, n))
 		y = 18
 		for team in ("blue", "red"):
 			text(sh, 6, y, "%s - EFEKTSIZ" % team.upper(), (255, 255, 255, 255))
@@ -1440,20 +1500,20 @@ def preview_attacks(files):
 				x = 6 + f * cw
 				ms_label(sh, x, y + 10, weapon, f)
 				st = files["units/%s/%s_%s.png" % (team, kind, anim)]
-				fr = Img(48, 48)
-				blit_a(fr, st, 0, 0, f * 48, 48)
+				fr = Img(fs, fs)
+				blit_a(fr, st, 0, 0, f * fs, fs)
 				framebox(sh, fr, x, y + 28, K)
-			y += 48 * K + 34
+			y += fs * K + 34
 			text(sh, 6, y, "%s - EFEKTLI" % team.upper(), (255, 255, 255, 255))
 			for f in range(n):
-				framebox(sh, hero_comp(files, team, kind, anim, weapon, f), 6 + f * cw, y + 10, K)
-			y += 84 * K + 24
+				framebox(sh, hero_comp(files, team, weapon, "attack", f), 6 + f * cw, y + 10, K)
+			y += COMP_H * K + 24
 		text(sh, 6, y, "OYUNDAKI BOYUT (2 KAT = 1080P): MAVI EFEKTLI, SONRA KIRMIZI", (255, 255, 255, 255))
 		x = 6
 		for team in ("blue", "red"):
 			for f in range(n):
-				framebox(sh, hero_comp(files, team, kind, anim, weapon, f), x, y + 10, 2)
-				x += 100 * 2 + 4
+				framebox(sh, hero_comp(files, team, weapon, "attack", f), x, y + 10, 2)
+				x += COMP_W * 2 + 4
 			x += 16
 		sh.save(os.path.join(OUT, "preview_saldiri_%s.png" % name))
 	# birimler
@@ -1488,17 +1548,76 @@ def preview_attacks(files):
 			framebox(sh, fr, 6 + f * (fw * 4 // 2 + 10), y + 10, 2)
 		y += im.h * 2 + 24
 	for name, fw, lab, k in (("thrust", THRUST_W, "THRUST.PNG SAPLAMA 3 KARE", 4), ("spark", 16, "SPARK.PNG VURUS KIVILCIMI 4 KARE", 4),
-			("puff", 24, "PUFF.PNG OLUM BULUTU 5 KARE", 4), ("spear_blue", SPEAR_W, "SPEAR_BLUE / SPEAR_RED.PNG MIZRAK KATMANI", 4)):
+			("puff", 24, "PUFF.PNG OLUM BULUTU 5 KARE", 4)):
 		text(sh, 6, y, lab)
 		im = files["fx/%s.png" % name]
 		for f in range(im.w // fw):
 			fr = Img(fw, im.h)
 			blit_a(fr, im, 0, 0, f * fw, fw)
 			framebox(sh, fr, 6 + f * (fw * k + 10), y + 10, k)
-		if name == "spear_blue":
-			framebox(sh, files["fx/spear_red.png"], 6 + SPEAR_W * k + 20, y + 10, k)
 		y += im.h * k + 24
 	sh.save(os.path.join(OUT, "preview_saldiri_efekt.png"))
+
+
+def crop(im, x0, y0, w, h):
+	o = Img(w, h)
+	for y in range(h):
+		for x in range(w):
+			o.p[y * w + x] = im.get(x0 + x, y0 + y)
+	return o
+
+
+def preview_weapons(files):
+	"""preview_silah_*.png: her silah için gövde (silahsız) / silah katmanı / gövde + silah / efektli, kare kare.
+	Hepsi aynı orijinde (karakter ortası) kırpılır: katmanların hizası ve tek silah kuralı gözle denetlenir."""
+	K = 3
+	CW, CH = 64, 52  # kırpma: karakter ortasının -24..+40 ve -34..+18 çevresi
+	FW, FH = 100, 88  # efektli kırpma
+	seq = [("idle", f) for f in range(2)] + [("run", f) for f in range(4)]
+	for weapon, name, label in (("fist", "yumruk", "YUMRUK (SILAHSIZ)"), ("sword", "kilic", "KILIC (+ KALKAN)"),
+			("spear", "mizrak", "MIZRAK"), ("bow", "yay", "YAY")):
+		body_atk, _ = hero_layers(files, "blue", weapon, "attack")
+		n = body_atk.w // body_atk.h
+		cols = seq + [("attack", f) for f in range(n)]
+		cw = CW * K + 8
+		w = len(cols) * cw + 120
+		h = 2 * (3 * (CH * K + 22) + FH * 2 + 40) + 40
+		sh = Img(w, h)
+		for i in range(w * h):
+			sh.p[i] = PANEL
+		text(sh, 6, 4, "SILAH %s - GOVDE (SILAHSIZ) / SILAH KATMANI / GOVDE + SILAH / EFEKTLI - BEKLEME 2, KOSU 4, SALDIRI %d - %d KAT"
+			% (label, n, K), (255, 220, 120, 255))
+		y = 18
+		for team in ("blue", "red"):
+			text(sh, 6, y, "TAKIM " + ("MAVI" if team == "blue" else "KIRMIZI"), (255, 255, 255, 255))
+			y += 10
+			for row, rlab in (("body", "GOVDE"), ("wpn", "SILAH"), ("comp", "GOVDE+SILAH")):
+				text(sh, 6, y + CH * K // 2, rlab, (255, 255, 255, 255))
+				for c, (anim, f) in enumerate(cols):
+					x = 110 + c * cw
+					if row == "body":
+						lab = "%s %d" % ({"idle": "BEKLEME", "run": "KOSU", "attack": "SALDIRI"}[anim], f)
+						text(sh, x, y - 1, lab, (200, 200, 215, 255))
+					body, lay = hero_layers(files, team, weapon, anim)
+					C = Img(COMP_W, COMP_H)
+					fs = body.h
+					X0, Y0 = COMP_CX - fs // 2, COMP_CY - fs // 2
+					if row != "wpn":
+						blit_a(C, body, X0, Y0, f * fs, fs)
+					if row != "body" and lay is not None:
+						blit_a(C, lay, X0, Y0, f * fs, fs)
+					cc = crop(C, COMP_CX - 24, COMP_CY - 34, CW, CH)
+					sh.blit(over(cc.scaled(K), BG), x, y + 7)
+					if row == "wpn" and lay is None:
+						text(sh, x + 8, y + 7 + CH * K // 2, "YOK", (255, 255, 255, 255))
+				y += CH * K + 22
+			text(sh, 6, y + FH, "EFEKTLI", (255, 255, 255, 255))
+			for f in range(n):
+				C = hero_comp(files, team, weapon, "attack", f)
+				cc = crop(C, COMP_CX - 30, COMP_CY - 48, FW, FH)
+				sh.blit(over(cc.scaled(2), BG), 110 + (6 + f) * cw, y)  # saldırı sütunlarının altında
+			y += FH * 2 + 40
+		sh.save(os.path.join(OUT, "preview_silah_%s.png" % name))
 
 
 if __name__ == "__main__":
@@ -1507,4 +1626,5 @@ if __name__ == "__main__":
 		im.save(os.path.join(OUT, path))
 	preview(files)
 	preview_attacks(files)
+	preview_weapons(files)
 	print("tamam: %d PNG -> %s" % (len(files), os.path.normpath(OUT)))

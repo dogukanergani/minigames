@@ -49,12 +49,13 @@ const ATK_MS := {
 	"u_shield": [70, 50, 70, 80], "u_cannon": [90, 70, 90, 110, 120],
 }
 const ATK_DEFAULT_MS := 300.0  # tabloda olmayan (Tiny Swords) şeritler bu sürede eşit oynar
-## Mızrak katmanı: ön elin karakter ortasından ileri uzaklığı (dünya birimi, kare başına; make_sprites SPEAR_GRIP x 2/3)
+## Mızrak saldırısı: ön elin karakter ortasından ileri uzaklığı (dünya birimi, kare başına; make_sprites SPEAR_GRIP x 2/3).
+## Mızrağın kendisi silah katmanındadır (wpn_spear_attack.png); saplama efekti (fx/thrust) bu noktadan başlar.
 const SPEAR_GRIP := [-2.0, -4.0, 6.0, 8.667, 7.333, 3.333]
-## Efekt şeritleri: [kare genişliği, pivot] (make_sprites.py SLASH / THRUST_* / SPEAR_*)
+## Efekt şeritleri: [kare genişliği, pivot] (make_sprites.py SLASH / THRUST_*)
 const FX := {
 	"slash": [96, Vector2(48, 48)], "thrust": [64, Vector2(12, 10)], "spark": [16, Vector2(8, 8)],
-	"puff": [24, Vector2(12, 12)], "spear": [60, Vector2(18, 5)],
+	"puff": [24, Vector2(12, 12)],
 }
 
 var available := false        # herhangi bir sprite paketi var mı
@@ -129,6 +130,23 @@ func hero_attack_anim(sprite: String, weapon: String) -> String:
 	if weapon == "fist" and _meta.has("fist_attack"):
 		return _meta.fist_attack
 	return attack_anim(sprite)
+
+
+## Kahramanın çizim katmanları: [gövde, silah] (silah null olabilir). `anim`: "idle" | "run" | "attack".
+## Özgün pakette gövde şeritleri SİLAHSIZDIR (units/<takım>/hero_<gövde>_<anim>.png), silah ayrı şerittir
+## (wpn_<silah>_<anim>.png): gövdeyle aynı kare boyu, sırası ve orijini, üst üste aynı karede çizilir. Yumrukta
+## silah katmanı yok (eller boş). Katman dosyaları yoksa (Tiny Swords, eski paket) silahı gömülü tek şerit döner.
+func hero_layers(team: int, weapon: String, anim: String) -> Array:
+	var sprite: String = WEAPON_SPRITE.get(weapon, "warrior")
+	var banim: String = hero_attack_anim(sprite, weapon) if anim == "attack" else anim
+	if custom:
+		var body := tex("units/%s/hero_%s_%s.png" % [TEAM_DIR[team], sprite, banim])
+		var wt: Texture2D = null
+		if weapon != "fist":
+			wt = tex("units/%s/wpn_%s_%s.png" % [TEAM_DIR[team], weapon, anim])
+		if body != null and (weapon == "fist" or wt != null):
+			return [body, wt]
+	return [unit_tex(team, sprite, banim), null]
 
 
 ## Saldırının toplam süresi (ms).
