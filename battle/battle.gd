@@ -2244,40 +2244,47 @@ func _draw_unit_sprite(a: Array, upos: Vector2) -> bool:
 	return true
 
 
-## Kahramanı sprite ile çizer. Silaha göre görünüm: yay = okçu, mızrak = mızrakçı, diğerleri = savaşçı.
+## Kahramanı sprite ile çizer: silahsız gövde + elindeki silahın katmanı (Art.hero_layers; aynı kare, aynı hiza).
+## Gövde silaha göre: yay = okçu, mızrak = mızrakçı, kılıç/yumruk = savaşçı. Yumrukta silah katmanı yok.
 ## Saldırı sırasında silaha özel saldırı şeridi (yön saldırı başındaki nişandan), vurulunca beyaz parlama.
 func _draw_hero_sprite(id: int, a: Array, pos: Vector2) -> bool:
 	var team: int = a[4]
 	var now := Time.get_ticks_msec()
-	var sprite: String = Art.WEAPON_SPRITE.get(a[8], "warrior")
 	var face_a: float = a[7]
 	if id == my_id and not is_auto:
 		face_a = (get_global_mouse_position() - pos).angle()
-	var t: Texture2D = null
+	var layers: Array = []
 	var frame := 0
 	var st: Dictionary = atk_anim.get(id, {})
 	if not st.is_empty():
 		var w: String = st.w
-		var s2: String = Art.WEAPON_SPRITE.get(w, "warrior")
-		var at := Art.unit_tex(team, s2, Art.hero_attack_anim(s2, w))
+		var al := Art.hero_layers(team, w, "attack")
+		var at: Texture2D = al[0]
 		if at != null:
 			var fr := Art.attack_frame(at, w, float(now - int(st.t)))
 			if fr >= 0:
-				t = at
+				layers = al
 				frame = fr
 				face_a = st.aim
-	if t == null:
+	if layers.is_empty():
 		var moving: bool = hero_move.get(id, false)
-		t = Art.unit_tex(team, sprite, "run" if moving else "idle")
-		if t == null:
+		layers = Art.hero_layers(team, a[8], "run" if moving else "idle")
+		if layers[0] == null:
 			return false
-		frame = _anim_frame(t, 90.0 if moving else 130.0, 0)
+		frame = _anim_frame(layers[0], 90.0 if moving else 130.0, 0)
+	var t: Texture2D = layers[0]
 	var foot: float = Art.foot_for(t, 32.0, Art.get_meta_value("foot")) if Art.custom else -1.0
 	var flip := cos(face_a) < 0.0
-	Art.draw_frame(self, t, frame, pos + Vector2(0, 4), Art.hero_scale(), flip, Color.WHITE, foot)
 	var hk := 1.0 - float(now - int(hit_t.get(id, -1000))) / float(HIT_FLASH_MS)
-	if hk > 0.0:
-		Art.draw_frame(self, Art.white(t), frame, pos + Vector2(0, 4), Art.hero_scale(), flip, Color(1, 1, 1, 0.5 + 0.5 * hk), foot)
+	for pass_i in (2 if hk > 0.0 else 1):  # 0: gövde + silah, 1: vurulma parlaması (beyaz siluet)
+		for lt in layers:
+			if lt == null:
+				continue
+			var lf := mini(frame, Art.frame_count(lt) - 1)
+			if pass_i == 0:
+				Art.draw_frame(self, lt, lf, pos + Vector2(0, 4), Art.hero_scale(), flip, Color.WHITE, foot)
+			else:
+				Art.draw_frame(self, Art.white(lt), lf, pos + Vector2(0, 4), Art.hero_scale(), flip, Color(1, 1, 1, 0.5 + 0.5 * hk), foot)
 	return true
 
 
@@ -2357,9 +2364,10 @@ func _vis_events(now: int) -> void:
 		u_hit_prev[uid] = hit
 
 
-## Kahraman saldırı efekti: kılıç kesme izi, mızrak katmanı + saplama, yumruk/kılıç vuruş kıvılcımı.
-## Hepsi saldırı başındaki nişan açısına döner. Doku yoksa (Tiny Swords / kutu) basit çizgi yedeği.
-func _draw_attack_fx(id: int, pos: Vector2, team: int) -> void:
+## Kahraman saldırı efekti: kılıç kesme izi, mızrak saplaması, yumruk/kılıç vuruş kıvılcımı. Silahın kendisini
+## ÇİZMEZ (o, gövdeyle aynı karede silah katmanındadır: _draw_hero_sprite). Hepsi saldırı başındaki nişan
+## açısına döner. Doku yoksa (Tiny Swords / kutu) basit çizgi yedeği.
+func _draw_attack_fx(id: int, pos: Vector2, _team: int) -> void:
 	var st: Dictionary = atk_anim.get(id, {})
 	if st.is_empty():
 		return
@@ -2383,12 +2391,10 @@ func _draw_attack_fx(id: int, pos: Vector2, team: int) -> void:
 				draw_arc(chest, 21.0, ang + deg_to_rad(minf(s0, s1)), ang + deg_to_rad(maxf(s0, s1)), 12, Color(0.7, 0.8, 1.0, 0.6 * fade), 1.0)
 			if f >= 3:
 				_draw_spark(chest + dir * 22.0, f - 3)
-		"spear":
+		"spear":  # mızrağın kendisi silah katmanında (gövdeyle aynı karede); burada yalnızca saplama efekti
 			var grip := pos + Vector2(0, -1) + dir * float(Art.SPEAR_GRIP[f])
-			var drawn := Art.draw_fx(self, "spear", 0, grip, ang, flip, Color.WHITE, "fx/spear_%s.png" % Art.TEAM_DIR[team])
-			if f >= 2 and f <= 4 and drawn:
-				Art.draw_fx(self, "thrust", f - 2, grip, ang, flip)
-			if not drawn and f >= 1 and f <= 4:  # yedek: ileri saplama çizgisi
+			var drawn := f >= 2 and f <= 4 and Art.draw_fx(self, "thrust", f - 2, grip, ang, flip)
+			if not drawn and not Art.custom and f >= 1 and f <= 4:  # yedek: ileri saplama çizgisi
 				draw_line(grip, grip + dir * 26.0, Color(1, 1, 1, 0.9), 1.5)
 				draw_circle(grip + dir * 27.0, 1.5 if f != 3 else 2.5, Color(1, 0.95, 0.6))
 		"fist":
