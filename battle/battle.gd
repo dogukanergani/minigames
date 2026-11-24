@@ -83,11 +83,14 @@ const WALL_HP := {"wall_wood": 40, "wall_stone": 100}
 const SHIELD := {"shield_wood": 0.15, "shield_iron": 0.30}
 
 # Savunma kuleleri (markette "Kule", item id'leriyle aynı). 🧪 sayılar taslak.
-const TOWER_ORDER := ["tower_archer", "tower_stone"]  # anlık görüntüde kısa indeks
+const TOWER_ORDER := ["tower_archer", "tower_stone", "tower_base"]  # anlık görüntüde kısa indeks
 const TOWER_TYPES := {
 	"tower_archer": {"name": "Okçu Kulesi", "hp": 160.0, "range": 120.0, "dmg": 9.0, "cd": 0.8},
 	"tower_stone": {"name": "Taş Kule", "hp": 320.0, "range": 90.0, "dmg": 6.0, "cd": 1.0},
+	# Kale kulesi: takıma ait, oyuncusuz, yıkılamaz. Düşük hasar (tek başına kahramanı kısa sürede öldürmez)
+	"tower_base": {"name": "Kale Kulesi", "hp": 100.0, "range": 140.0, "dmg": 5.0, "cd": 1.0},
 }
+const BASE_TOWER_OFFSETS := [Vector2(-32.0, -56.0), Vector2(-32.0, 56.0)]  # bayrağa göre (Mavi için; Kırmızı x'i aynalanır)
 const TOWER_SIZE := 16.0  # çarpışma kutusu
 const TOWER_HALF := 8.0
 const TOWER_MIN_DIST := 40.0  # kuleler arası en az mesafe
@@ -288,12 +291,25 @@ func _start() -> void:
 		if stress:
 			_spawn_stress(id, pl[id])
 	flags = [_new_flag(0), _new_flag(1)]
+	_spawn_base_towers()
 	for q in pl.values():  # kulesi olan varsa önce yerleştirme aşaması (yoksa atlanır)
 		if not q.tw.is_empty():
 			placing = placement_time
 	countdown = countdown_time
 	time_left = time_limit
 	started = true
+
+
+## Her kalenin yanına otomatik savunma kuleleri koyar (owner -1, yıkılamaz).
+func _spawn_base_towers() -> void:
+	for t in 2:
+		for off in BASE_TOWER_OFFSETS:
+			var c: Vector2 = FLAG_HOME[t] + Vector2(off.x * (1.0 if t == 0 else -1.0), off.y)
+			var tt: Dictionary = TOWER_TYPES["tower_base"]
+			towers.append({"id": next_tid, "owner": -1, "team": t, "slot": 0, "type": "tower_base",
+				"pos": c, "rect": _tower_rect(c), "hp": tt.hp, "max": tt.hp, "cd": 1.0, "retarget": randf() * 0.25,
+				"tkind": 0, "tid": -1, "atk_vis": 0.0, "hit_vis": 0.0, "fired": false})
+			next_tid += 1
 
 
 func _new_flag(team: int) -> Dictionary:
@@ -1290,18 +1306,28 @@ func _update_towers(dt: float) -> void:
 			tw.tkind = 0
 			tw.tid = -1
 			var best: float = tt.range
+			var carrier_found := false
 			for hid in pl.keys():
 				var h: Dictionary = pl[hid]
 				if h.team == tw.team or not h.alive:
 					continue
 				var d: float = tw.pos.distance_to(h.pos)
+				if tw.owner < 0 and h.carrying >= 0 and d <= tt.range:  # kale kulesi: bayrak taşıyanı önce vurur
+					if not carrier_found or d < best:
+						best = d
+						tw.tkind = 1
+						tw.tid = hid
+						carrier_found = true
+					continue
+				if carrier_found:
+					continue
 				if d <= best:
 					best = d
 					tw.tkind = 1
 					tw.tid = hid
 			for uid in units.keys():
 				var u: Dictionary = units[uid]
-				if u.team == tw.team:
+				if u.team == tw.team or carrier_found:
 					continue
 				var d2: float = tw.pos.distance_to(u.pos)
 				if d2 <= best:
@@ -1332,7 +1358,7 @@ func _update_towers(dt: float) -> void:
 
 
 func _damage_tower(tw: Dictionary, amount: float) -> void:
-	if tw.is_empty() or not towers.has(tw):
+	if tw.is_empty() or not towers.has(tw) or tw.owner < 0:  # kale kuleleri yıkılamaz
 		return
 	tw.hp -= amount
 	tw.hit_vis = HIT_VIS
@@ -1455,7 +1481,7 @@ func _pack_snapshot(s: Dictionary) -> PackedInt32Array:
 	for tw in s.tws:  # kule başına 2 tamsayı: konum, (can, tür, takım, sahip sırası, yuva, saldırdı, vuruldu)
 		out.append(_q(tw[0]) | (_q(tw[1]) << 16))
 		out.append(clampi(ceili(tw[2]), 0, 511) | (maxi(int(tw[4]), 0) << 9) | (int(tw[5]) << 11)
-			| (clampi(int(tw[6]), 0, 15) << 12) | (int(tw[7]) << 16) | (int(tw[8]) << 17) | (int(tw[9]) << 18))
+			| ((15 if int(tw[6]) < 0 else clampi(int(tw[6]), 0, 14)) << 12) | (int(tw[7]) << 16) | (int(tw[8]) << 17) | (int(tw[9]) << 18))
 	return out
 
 
@@ -2132,7 +2158,11 @@ func _draw_tower(a: Array, mine: bool) -> void:
 	else:
 		draw_rect(r, col.darkened(0.55))
 		draw_rect(r.grow(-2.0), col.darkened(0.2))
-		if a[4] == 0:  # okçu kulesi: ortada ok işareti
+		if a[4] == 2:  # kale kulesi: koyu gövde + takım rengi bayrakçık
+			draw_rect(r.grow(-3.0), Color(0.5, 0.5, 0.56))
+			draw_rect(Rect2(c.x - 1.0, c.y - 5.0, 2.0, 10.0), col)
+			draw_rect(Rect2(c.x - 4.0, c.y - 1.0, 8.0, 2.0), col)
+		elif a[4] == 0:  # okçu kulesi: ortada ok işareti
 			draw_rect(Rect2(c.x - 0.5, c.y - 5.0, 1.0, 10.0), Color(0.97, 0.92, 0.6))
 			draw_rect(Rect2(c.x - 3.0, c.y - 5.0, 6.0, 1.0), Color(0.97, 0.92, 0.6))
 		else:  # taş kule: gri çekirdek + tepe dişleri
@@ -2148,7 +2178,7 @@ func _draw_tower(a: Array, mine: bool) -> void:
 		draw_rect(r.grow(1.5), Color(1.0, 0.85, 0.25, 0.9), false, 1.0)
 		if snap.pl > 0.0:
 			_text(self, c + Vector2(-4, 4), str(a[7] + 1), 9, Color.WHITE, 8.0, HORIZONTAL_ALIGNMENT_CENTER)
-	if a[2] < a[3] or snap.pl > 0.0:
+	if a[4] != 2 and (a[2] < a[3] or snap.pl > 0.0):
 		draw_rect(Rect2(c.x - TOWER_HALF, c.y - TOWER_HALF - 5.0, TOWER_SIZE, 2.0), Color(0.3, 0.05, 0.05))
 		draw_rect(Rect2(c.x - TOWER_HALF, c.y - TOWER_HALF - 5.0, TOWER_SIZE * clampf(a[2] / a[3], 0.0, 1.0), 2.0), Color(0.3, 1.0, 0.3))
 
