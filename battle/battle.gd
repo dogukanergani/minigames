@@ -2241,8 +2241,18 @@ func _draw_tower(a: Array, mine: bool) -> void:
 	var r := _tower_rect(c)
 	var spr: Texture2D = Art.tex("buildings/%s_%s.png" % [TOWER_ORDER[a[4]], Art.TEAM_DIR[a[5]]]) if Art.available else null
 	if spr != null:
-		var sz := Vector2(spr.get_width(), spr.get_height()) * SPR_TILE
-		draw_texture_rect(spr, Rect2(c + Vector2(-sz.x * 0.5, TOWER_HALF - sz.y), sz), false)
+		# Kare: ateş ederken atış karesi (3 karelik şerit, ortadaki parlama), canı yarıdan azsa hasarlı kare.
+		var base := "buildings/%s_%s" % [TOWER_ORDER[a[4]], Art.TEAM_DIR[a[5]]]
+		var fw: int = spr.get_width()
+		var frame: Texture2D = spr
+		if a[8] and Art.tex(base + "_attack.png") != null:
+			frame = Art._cell(base + "_attack.png", 1, fw)
+		elif a[4] != 2 and a[2] < a[3] * 0.5 and Art.tex(base + "_damaged.png") != null:
+			frame = Art._cell(base + "_damaged.png", 0, fw)
+		if frame == null:
+			frame = spr
+		var sz := Vector2(frame.get_width(), frame.get_height()) * Art.world_scale()
+		draw_texture_rect(frame, Rect2(c + Vector2(-sz.x * 0.5, TOWER_HALF - sz.y), sz), false)
 	else:
 		draw_rect(r, col.darkened(0.55))
 		draw_rect(r.grow(-2.0), col.darkened(0.2))
