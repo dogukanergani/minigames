@@ -428,6 +428,59 @@ def unit_shieldbearer():
 		(rect(7, 8, 8, 13), GOLD), (rect(3, 10, 12, 11), GOLD), ({(7, 10), (8, 10), (7, 11), (8, 11)}, GOLD_L)])
 
 
+ROBE = (58, 46, 78, 255)       # Şifacı cüppesi (make_sprites.py unit_frame ile aynı)
+ROBE_L = (92, 76, 120, 255)
+ROBE_D = (36, 28, 52, 255)
+HEAL = (120, 220, 96, 255)     # şifa yeşili
+HEAL_L = (196, 255, 170, 255)
+
+
+def unit_healer():
+	"""Şifacı: kukuletalı koyu cüppe, gölgeli yüzde parlayan gözler, göğüste yeşil artı, sağda yeşil küreli asa."""
+	hood = circ(6.5, 6, 4.3)
+	face = circ(6.5, 7, 2.3) - rect(0, 0, 15, 4)
+	robe = rect(1, 11, 12, 15) | rect(2, 10, 11, 10)
+	cross = rect(6, 10, 7, 15) | rect(4, 12, 9, 13)
+	return icon([
+		(line(13, 4, 13, 15, 1), WOOD_D), (rect(13, 6, 13, 13), WOOD),
+		(robe, ROBE), (rect(1, 14, 12, 15), ROBE_D), (rect(2, 10, 3, 13), ROBE_L),
+		(hood, ROBE), ({(x, y) for x, y in hood if y <= 3 or x <= 3}, ROBE_L), (face, ROBE_D),
+		({(5, 7), (8, 7)}, HEAL_L),
+		(cross, HEAL), ({(6, 10), (6, 11), (4, 12), (5, 12)}, HEAL_L), ({(7, 15), (9, 13)}, LEAF_D),
+		(circ(13, 2.6, 1.9), HEAL), ({(13, 2), (12, 2)}, HEAL_L), ({(12, 1)}, WHITE)])
+
+
+def tower_archer():
+	"""Okçu Kulesi: daralan taş gövde, tahta siper, arkasında yeşil kukuletalı okçu ve yay, önde kırmızı sancak."""
+	shaft = rows([(9, 5, 10), (10, 5, 10), (11, 4, 11), (12, 4, 11), (13, 4, 11), (14, 3, 12)])
+	mortar = rows([(11, 4, 11), (14, 3, 12)]) | {(7, 9), (7, 10), (5, 12), (5, 13), (10, 12), (10, 13)}
+	arc = {(11 + (1 if abs(y - 2) <= 1 else 0), y) for y in range(0, 5)}
+	return icon([
+		(circ(7.5, 2.6, 1.9), LEAF), ({(8, 3), (9, 3), (8, 2)}, SKIN), ({(9, 2)}, OL), ({(6, 1), (7, 1)}, (140, 220, 110, 255)),
+		(arc, WOOD_L), (line(11, 0, 11, 4, 1), WHITE), ({(12, 2)}, SKIN),
+		(shaft, GREY), (mortar & shaft, GREY_D), ({(x, y) for x, y in shaft if x <= 5 and y >= 9}, GREY_L),
+		(rect(1, 5, 14, 8), WOOD), (rect(1, 5, 14, 5), WOOD_L), (rect(1, 7, 14, 7), WOOD_D), ({(4, 6), (11, 6)}, WOOD_D),
+		(rect(1, 3, 1, 8) | rect(14, 3, 14, 8), WOOD_D),
+		(rect(6, 7, 9, 11) - {(7, 11), (8, 11)}, RED), (rect(6, 7, 6, 10), (255, 120, 100, 255)), ({(7, 8), (8, 8), (7, 9), (8, 9)}, GOLD),
+		({(7, 13), (8, 13), (7, 14), (8, 14)}, WOOD_D)])
+
+
+def tower_stone():
+	"""Taş Kule: tıknaz gövde, üç dişli siper, önde altın göbekli demir kalkan."""
+	body = rect(3, 6, 12, 14) | rect(2, 13, 13, 14)
+	merl = rect(2, 1, 4, 3) | rect(6, 1, 9, 3) | rect(11, 1, 13, 3)
+	par = rect(2, 4, 13, 5)
+	sh = rows([(7, 5, 10), (8, 5, 10), (9, 5, 10), (10, 6, 9), (11, 7, 8)])
+	mortar = {(3, 8), (4, 8), (11, 8), (12, 8), (3, 11), (12, 11), (4, 10), (11, 10), (6, 13), (9, 13)}
+	return icon([
+		(body | merl | par, GREY), (mortar, GREY_D), (rect(3, 6, 3, 12), GREY_L), (rect(12, 6, 12, 12), GREY_D),
+		(rect(2, 13, 13, 13), GREY_L), (rect(2, 1, 4, 1) | rect(6, 1, 9, 1) | rect(11, 1, 13, 1) | rect(2, 4, 13, 4), GREY_L),
+		(rect(2, 5, 13, 5), GREY_D), ({(4, 2), (4, 3), (9, 2), (9, 3), (13, 2), (13, 3)}, GREY_D),
+		(sh, GOLD_D), (sh - rows([(7, 5, 10)]) - {(5, 8), (10, 8), (5, 9), (10, 9)}, TEAMS["blue"]["m"]),
+		({(6, 8), (6, 9)}, TEAMS["blue"]["l"]), ({(5, 7), (6, 7)}, GOLD),
+		({(7, 8), (8, 8), (6, 9), (9, 9)}, WHITE)])
+
+
 def ability_dash():
 	return icon([(line(1, 2, 6, 8, 2) | line(6, 8, 1, 14, 2), CYAN), (line(8, 2, 13, 8, 2) | line(13, 8, 8, 14, 2), CYAN),
 		(line(2, 3, 6, 8, 1) | line(9, 3, 13, 8, 1), WHITE)])
@@ -453,7 +506,8 @@ ICONS = {
 	"wall_wood": lambda: wall(True), "wall_stone": lambda: wall(False),
 	"boots": boots, "heart": heart, "fist": fist,
 	"unit_swordsman": unit_swordsman, "unit_archer": unit_archer, "unit_artillery": unit_artillery,
-	"unit_shieldbearer": unit_shieldbearer,
+	"unit_shieldbearer": unit_shieldbearer, "unit_healer": unit_healer,
+	"tower_archer": tower_archer, "tower_stone": tower_stone,
 	"ability_dash": ability_dash, "ability_burst": ability_burst, "ability_rally": ability_rally,
 	"coin": coin, "star": star, "check": check, "dots": dots, "skull": skull,
 	"medal_1": lambda: medal(1), "medal_2": lambda: medal(2), "medal_3": lambda: medal(3),
