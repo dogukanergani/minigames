@@ -62,7 +62,9 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 
 ## 6. Ekonomi ✅ (sayılar taslak)
 
-- Coin sıralamaya göre verilir: 1.→100, 2.→80, 3.→60, 4.→40, 5.→30, 6.→20, 7-8.→10, 9-10.→5
+- Coin sıralamaya göre verilir ✅ (x1.5 yapıldı): 1.→150, 2.→120, 3.→90, 4.→60, 5.→45, 6.→30, 7-8.→15, 9-10.→8
+- ✅ **Savaş bonusu:** savaş bitince kazanan takımın herkesi +80, kaybeden +40 coin alır (`Game.BATTLE_WIN_BONUS/LOSE_BONUS`). 🧪 Henüz yok: öldürme/bayrak/kule yıkma bonusu, sonuç ekranında kazanç dökümü, fiyatların yeni coine göre dengelenmesi.
+- ✅ **Minigame sonu:** son oyuncu bitirince 2.2 sn "HERKES BİTİRDİ!" anı gösterilir, sonra sonuç ekranı gelir.
 - Coin **bireyseldir**, herkes kendi alışverişini yapar.
 - ✅ **Alınan eşyalar kalıcıdır:** bir kez alınan eşya maç boyunca oyuncuda kalır (ölünce de kaybolmaz).
 - ❓ Harcanmayan coin sonraki tura devreder mi? 🧪 Evet, devretsin (biriktirip pahalı eşya almak mümkün olsun).
@@ -162,7 +164,7 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 
 > Bu yön, savaş prototipinden sonra ortaya çıktı: oyuncular tek karakter yerine **kendi kahramanını** doğrudan yönetir, yanında marketten aldığı **birliği** komutla yönetir.
 >
-> **Durum: ilk sürüm uygulandı ✅** Birim türleri: **Kılıççı** (40 coin) ve **Okçu** (50 coin). Birlik sınırı 4, herkes **2 bedava Kılıççı** ile başlar. Birimler marketten alınır/satılır. **Savaşta ölen birim bir süre sonra sahibinin üssünde yeniden doğar (kalıcı kayıp yok, bkz. aşağı).** Komutlar (Takip / Saldır / Bayrak) çalışır, birim zekâsı sunucuda. Türler: Kılıççı, Okçu, Kalkancı, Topçu (Şifacı sprite'ı hazır, oyunda henüz yok). Koşucu ve Mühendis henüz yok.
+> **Durum: ilk sürüm uygulandı ✅** Birim türleri: **Kılıççı** (40 coin) ve **Okçu** (50 coin). Birlik sınırı 4, herkes **2 bedava Kılıççı** ile başlar. Birimler marketten alınır/satılır. **Savaşta ölen birim bir süre sonra sahibinin üssünde yeniden doğar (kalıcı kayıp yok, bkz. aşağı).** Komutlar (Takip / Saldır / Bayrak) çalışır, birim zekâsı sunucuda. Türler: Kılıççı, Okçu, Kalkancı, Topçu, **Şifacı** ✅ (60 coin, stok 3, 32 can, menzil 70, saniyede 6 can iyileştirir, en yaralı dosta öncelik, düşmandan kaçar, saldırmaz; 🧪 denge: 2 Şifacı = 12 can/sn). Koşucu ve Mühendis henüz yok.
 
 **Temel fikir**
 - Her oyuncunun bir **kahramanı** (büyük, belirgin) ve en fazla **4 birimlik birliği** (küçük) var. 5v5'te takım başına 5 kahraman + 20 birim = 25, toplam 50 birim.
@@ -205,7 +207,8 @@ Her minigame şu arayüzü sağlar: sahne + `finished(ranking, labels)` sinyali.
 - ⚠️ Tiny Swords yedek paketinin lisansı kullanımı serbest bırakır ama **yeniden dağıtımı yasaklar**: dosyaları `assets/tinyswords/` altında, `.gitignore`'da tutulur (`assets/README.md`). Oyunun derlenmiş sürümünü paylaşmadan önce o paketin şartları tekrar okunmalı. Özgün paket için böyle bir kısıt yok.
 - ✅ **Kahraman vurgusu:** Her kahramanın ayağında takım renkli halka (kendi halkan altın çizgili, kalın ve nabız atar), başının üstünde taç (kendi kahramanın altın taç, diğerleri takım renginde üçgen). Birimlerde işaret yoktur. Oklar uçuş yönüne döner (mermi paketinde 8 bit açı).
 - ✅ **Arayüz teması** (`scripts/ui_theme.gd`, `tools/make_ui.py`, `assets/custom/ui/`): Lobi, market (ikon, fiyat, stok, sıra listesi, envanter), sonuç ekranları (madalyalı sıralama, maç skoru), maç sonu, savaş HUD'u (skor bandı, can, silah/yetenek/duvar/birlik kutuları, komut düğmeleri, mini harita, kill feed). Önizlemeler: `assets/custom/ui/preview_*.png`. UI görselleri yoksa tema düz stile düşer.
-- 🧪 Açık: Şifacı'nın oyuna girmesi (sprite hazır, `unit_healer` kataloğa eklenmeli), minigame ekranlarının (Refleks, Koşu, Coin) görsel tasarımı, yetenek efektleri, ses, isteğe bağlı bitmap pixel yazı tipi (Türkçe karakterli).
+- ✅ **Kale savunması:** her kalenin arkasında 2 otomatik kule (`tower_base`, sahipsiz, yıkılamaz; menzil 140, hasar 5, bekleme 1 sn). Önce bayrak taşıyan düşman kahramanı, yoksa en yakın düşmanı vurur. 🧪 Sayılar taslak; sprite sonra (`buildings/tower_base_<takım>.png`).
+- 🧪 Açık: minigame ekranlarının (Refleks, Koşu, Coin) görsel tasarımı, yetenek efektleri, ses, isteğe bağlı bitmap pixel yazı tipi (Türkçe karakterli).
 - Ton: ❓ (şu an çizgi film / şirin yönünde)
 - Ses: ❓ henüz yok.
 
