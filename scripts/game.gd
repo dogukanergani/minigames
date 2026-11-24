@@ -7,7 +7,10 @@ signal coins_changed
 const Items = preload("res://scripts/items.gd")
 
 ## Sıralamaya göre coin (1., 2., 3., ...). Son değer geri kalanlara uygulanır.
-const COIN_TABLE := [100, 80, 60, 40, 30, 20, 10, 10, 5, 5]
+const COIN_TABLE := [150, 120, 90, 60, 45, 30, 15, 15, 8, 8]
+## Savaş sonu bonusu: kazanan takımın oyuncularına / kaybedenlere (herkes coin alır).
+const BATTLE_WIN_BONUS := 80
+const BATTLE_LOSE_BONUS := 40
 
 ## Satış iadesi: alış fiyatının oranı (LoL gibi %70).
 const SELL_RATE := 0.7
@@ -79,6 +82,14 @@ func award(ranking: Array) -> void:
 	for i in ranking.size():
 		var id: int = ranking[i]
 		coins[id] = coins.get(id, 0) + coins_for_rank(i)
+	coins_changed.emit()
+
+
+## Savaş bitince herkese bonus (her istemci aynı sonuçtan aynı değeri üretir).
+func award_battle(winner_team: int) -> void:
+	for id in Net.players.keys():
+		var won: bool = Net.players[id].get("team", 0) == winner_team
+		coins[id] = coins.get(id, 0) + (BATTLE_WIN_BONUS if won else BATTLE_LOSE_BONUS)
 	coins_changed.emit()
 
 

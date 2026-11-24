@@ -206,6 +206,24 @@ func _clear() -> void:
 func _on_minigame_finished(ranking: Array, labels: Dictionary) -> void:
 	phase = Phase.RESULTS
 	Game.award(ranking)
+	if not auto_test:
+		# Son oyuncu bitirince sonuç ekranına hemen geçme: kısa bir "herkes bitirdi" anı
+		var banner := CanvasLayer.new()
+		banner.layer = 50
+		var lbl := Label.new()
+		lbl.text = "HERKES BİTİRDİ!"
+		lbl.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+		lbl.grow_horizontal = Control.GROW_DIRECTION_BOTH
+		lbl.grow_vertical = Control.GROW_DIRECTION_BOTH
+		lbl.add_theme_font_size_override("font_size", 28)
+		lbl.add_theme_color_override("font_outline_color", Color.BLACK)
+		lbl.add_theme_constant_override("outline_size", 6)
+		banner.add_child(lbl)
+		add_child(banner)
+		await get_tree().create_timer(2.2).timeout
+		banner.queue_free()
+		if phase != Phase.RESULTS:
+			return
 	var rows: Array = [{"t": "score"}]
 	var my_id := multiplayer.get_unique_id()
 	for i in ranking.size():
@@ -234,12 +252,15 @@ func _on_shop_finished() -> void:
 
 func _on_battle_finished(winner: int, scores: Array) -> void:
 	round_wins[winner] += 1
+	Game.award_battle(winner)
 	var match_over: bool = round_wins[winner] >= rounds_to_win
 	phase = Phase.MATCH_DONE if match_over else Phase.BATTLE_DONE
 	var rows: Array = [{"t": "score"}]
 	if not match_over:
 		rows.append({"t": "winner", "team": winner, "text": "SAVAŞI %s TAKIM KAZANDI   (bayrak %d - %d)" % [
 			Net.TEAM_NAMES[winner].to_upper(), scores[0], scores[1]]})
+	rows.append({"t": "text", "text": "Savaş bonusu: kazanan takım +%d coin, kaybeden +%d coin." % [
+		Game.BATTLE_WIN_BONUS, Game.BATTLE_LOSE_BONUS]})
 	rows.append({"t": "text", "text": "Birlikler (ölen birimler sonraki savaşta yeniden doğar):"})
 	for id in Game.last_ranking:
 		rows.append({"t": "units", "id": id})
