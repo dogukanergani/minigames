@@ -1191,6 +1191,384 @@ def coin_strip():
 	return strip(frames)
 
 
+# ---------------------------------------------------------------- savunma kuleleri (GDD §8d)
+# Oyuncu kuleleri 24x32, kale kulesi 32x48 sanat pikseli. Özgün pakette 1 piksel = 2/3 dünya birimi (Art.world_scale):
+# 16x21 ve 21x32 birim; çarpışma kutusu 16x16. Alt kenar zemindir (oyunda sprite'ın altı kutunun altına oturur).
+# Dosyalar (buildings/), kareler yan yana:
+#   <tür>_<takım>.png           bekleme, 1 kare (battle.gd şu an yalnız bunu okur)
+#   <tür>_<takım>_damaged.png   hasarlı (can %50 altı), 1 kare
+#   <tür>_<takım>_attack.png    ok atma, 3 kare: 0 nişan / germe, 1 atış, 2 toparlanma
+#   <tür>_<takım>_destroy.png   yıkılma, 4 kare: 0 sarsıntı, 1 üst çöker, 2 kütük + toz, 3 moloz (kale kulesinde yok)
+# Nişan yönü takıma göre pişirilir: Mavi sağa, Kırmızı sola bakar (düşman tarafı); oyunda aynalanmaz.
+TW_W, TW_H = 24, 32
+TB_TOP = 4
+TB_W, TB_H = 32, 48 + TB_TOP
+STONE = (84, 88, 106, 255)
+STONE_L = (116, 122, 144, 255)
+STONE_D = (56, 60, 78, 255)
+MOSS = (70, 128, 62, 255)
+WOOD_L = (190, 134, 80, 255)
+GLOW = (255, 214, 120, 255)
+GLOW_D = (226, 134, 52, 255)
+EMBER = (132, 74, 52, 255)
+DARK_IN = (30, 24, 44, 255)
+CLEAR = (0, 0, 0, 0)
+TOWER_FRAMES = {"idle": 1, "damaged": 1, "attack": 3, "destroy": 4}
+
+
+def tdir(team):
+	return 1 if team == "blue" else -1
+
+
+def mx(pts, w, d):
+	"""d = -1 ise kümeyi yatay aynalar (Kırmızı tarafı)."""
+	return set(pts) if d == 1 else {(w - 1 - x, y) for x, y in pts}
+
+
+def zig(*pts):
+	s = set()
+	for a, b in zip(pts, pts[1:]):
+		s |= line(a[0], a[1], b[0], b[1], 1)
+	return s
+
+
+def brick_fill(im, shape, y0, seed, course=4, brick=6):
+	"""Taş gövde: koyu çerçeve, tuğla sıraları (yatay harç, kaydırmalı derz), tuğla köşesinde ışık, sol kenar açık, sağ koyu."""
+	part(im, shape, STONE)
+	span = {}
+	for x, y in shape:
+		lo, hi = span.get(y, (x, x))
+		span[y] = (min(lo, x), max(hi, x))
+	r = random.Random(seed)
+	for x, y in sorted(shape):
+		ry = y - y0
+		k = (x + (ry // course) * (brick // 2)) % brick
+		if ry % course == course - 1 or k == 0:
+			im.set(x, y, STONE_D)
+		elif ry % course == 0 and k == 1 and r.random() < 0.7:
+			im.set(x, y, STONE_L)
+	for y, (lo, hi) in span.items():
+		im.set(lo, y, STONE_L)
+		im.set(hi, y, STONE_D)
+
+
+def carve(im, pts, edge=OL):
+	"""Pikselleri siler (kırık / yıkık kısım), kalan kenarı koyu çerçeveyle kapatır."""
+	pts = set(pts)
+	for x, y in pts:
+		im.set(x, y, CLEAR)
+	for x, y in pts:
+		for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+			q = (x + dx, y + dy)
+			if q not in pts and im.get(*q)[3] > 200:
+				im.set(q[0], q[1], edge)
+
+
+def crack(im, pts):
+	"""Çatlak: koyu çizgi, sağında açık kenar (derinlik). Yalnız dolu piksellere çizilir."""
+	pts = {p for p in pts if im.get(*p)[3] > 200}
+	for x, y in pts:
+		im.set(x, y, OL)
+	for x, y in pts:
+		q = im.get(x + 1, y)
+		if (x + 1, y) not in pts and q[3] > 200 and q != OL:
+			im.set(x + 1, y, STONE_L)
+
+
+def moss(im, pts):
+	for x, y in pts:
+		if im.get(x, y)[3] > 200 and im.get(x, y) != OL:
+			im.set(x, y, MOSS)
+
+
+def tower_archer(team, state="idle", f=0):
+	"""Okçu Kulesi: taş gövde, üstte tahta siper (korkuluk), arkasında kukuletalı okçu ve yay, önde takım sancağı."""
+	T = TEAMS[team]
+	d = tdir(team)
+	im = Img(TW_W, TW_H)
+	atk = state == "attack"
+	shadow(im, 11.5, 30, 10.5, 1.6)
+	brick_fill(im, poly([(6, 13), (18, 13), (20, 30), (4, 30)]), 13, 41)
+	for s in ({(3, 13), (4, 13), (5, 13), (4, 14), (5, 14), (5, 15)},):  # siper taşıyan konsollar
+		part(im, s | mx(s, TW_W, -1), STONE_L)
+	door = rect(10, 26, 13, 29) | {(11, 25), (12, 25)}
+	part(im, door, WOOD_D)
+	fill(im, rect(11, 26, 12, 29), WOOD)
+	fill(im, {(12, 28)}, GOLD)
+	fill(im, rect(11, 21, 12, 23), OL)  # mazgal
+	moss(im, {(5, 29), (6, 29), (5, 28), (18, 29), (17, 29), (7, 29)})
+	# okçu (siperin arkasında: yalnızca omuzlar ve baş görünür)
+	pull, arrow = 0, False
+	if atk:
+		pull, arrow = ((2, True), (-1, False), (0, False))[f]
+	hx = 11.5 + 0.5 * d
+	body = ell(11.5, 7, 3.2, 1.8)
+	part(im, body, T["m"])
+	fill(im, {(x, y) for x, y in body if y < 7}, T["l"])
+	head = circ(hx, 3.8, 2.1)
+	part(im, head, SKIN)
+	fill(im, {(x, y) for x, y in head if y <= 2 or (x - hx) * d < -0.6}, T["d"])
+	fill(im, {(x, y) for x, y in head if y <= 1}, T["m"])
+	fill(im, {(int(hx) + d, 4)}, OL)
+	bx, by = int(round(hx + 3 * d)), 4
+	offs = {0: 2, 1: 2, 2: 1, 3: 0}
+	part(im, {(bx + d * offs[abs(k)], by + k) for k in range(-3, 4)}, WOOD_D)
+	sx = bx - d * pull
+	if atk and f == 2:  # titreyen kiriş
+		fill(im, {(bx - d * (y % 2), y) for y in range(by - 3, by + 4)}, WHITE)
+	else:
+		fill(im, line(bx, by - 3, sx, by, 1) | line(sx, by, bx, by + 3, 1), WHITE)
+	fill(im, {(bx + 2 * d, by)}, SKIN)  # yayı tutan el
+	if arrow:
+		fill(im, line(sx, by, bx + 3 * d, by, 1), WOOD_L)
+		fill(im, {(bx + 4 * d, by), (bx + 3 * d, by - 1), (bx + 3 * d, by + 1)}, STEEL)
+		fill(im, {(sx - d, by - 1), (sx - d, by + 1)}, WHITE)
+	if atk and f == 1:  # atış: ok çıkar, parlama ve hız çizgisi
+		x0, x1 = (bx + 3, TW_W) if d == 1 else (0, bx - 2)
+		speed_lines(im, x0, x1, (by,), (255, 250, 220, 230), seed=9)
+		spark_star(im, bx + 4 * d, by, 2)
+	# tahta siper: korkuluk tahtaları, kiriş, köşe direkleri
+	part(im, rect(1, 8, 22, 12), WOOD)
+	fill(im, rect(1, 8, 22, 8), WOOD_L)
+	for x in (4, 7, 10, 13, 16, 19):
+		fill(im, rect(x, 9, x, 10), WOOD_D)
+	fill(im, rect(1, 11, 22, 11), WOOD_D)
+	fill(im, {(4, 12), (19, 12)}, STEEL_D)
+	for x0 in (1, 21):
+		part(im, rect(x0, 6, x0 + 1, 12), WOOD_D)
+		fill(im, {(x0, 6), (x0 + 1, 6)}, WOOD)
+	# takım sancağı (çatal uçlu), altın ok işareti
+	ban = rect(9, 11, 14, 18) - {(11, 18), (12, 18)}
+	part(im, ban, T["m"])
+	fill(im, rect(9, 11, 9, 17), T["l"])
+	fill(im, rect(9, 11, 14, 11), T["d"])
+	fill(im, {(11, 12), (12, 12), (10, 13), (13, 13), (11, 14), (12, 14), (10, 15), (13, 15)}, GOLD)  # çift ok ucu (^^)
+	# flama: arka köşe direğinin üstünde
+	px = 1 if d == 1 else 22
+	part(im, rect(px, 1, px, 5), WOOD_D)
+	cloth = {(px + d * i, 1) for i in range(1, 5)} | {(px + d * i, 2) for i in range(1, 4)} | {(px + d, 3)}
+	part(im, cloth, T["m"])
+	fill(im, {(px + d * i, 1) for i in range(1, 4)}, T["l"])
+	if state == "damaged":
+		carve(im, mx(rect(19, 5, 23, 7) | {(21, 8), (22, 8), (22, 9)}, TW_W, d))  # öndeki direk kırık
+		crack(im, zig((7, 15), (8, 17), (7, 19), (8, 21)) | zig((16, 22), (15, 24), (16, 26)))
+		carve(im, {(14, 14), (14, 15), (13, 16), (14, 16), (13, 17), (14, 17), (10, 16)})  # yırtık sancak
+		fill(im, line(5, 9, 7, 11, 1), WOOD_L)  # siperde saplanmış düşman oku
+		fill(im, {(4, 8)}, WHITE)
+		part(im, mx(rect(20, 29, 21, 29), TW_W, d), STONE)
+		smoke_puff(im, 11.5 + 8 * d, 3, 2.2, 0.7, 5)
+	return im
+
+
+def tower_stone(team, state="idle", f=0):
+	"""Taş Kule: tıknaz, kalın duvar, dişli siper (mazgal arasında miğferli muhafız), önde takım renkli kalkan."""
+	T = TEAMS[team]
+	d = tdir(team)
+	im = Img(TW_W, TW_H)
+	atk = state == "attack"
+	shadow(im, 11.5, 30, 11, 1.6)
+	brick_fill(im, rect(4, 11, 19, 25) | rect(3, 26, 20, 29), 11, 52)
+	fill(im, rect(3, 26, 20, 26), STONE_L)  # taban çıkıntısı
+	fill(im, {(6, 12), (9, 12), (14, 12), (17, 12)}, OL)  # dökme delikleri
+	for x in (5, 18):
+		fill(im, rect(x, 15, x, 18), OL)  # mazgal
+	moss(im, {(4, 29), (5, 29), (4, 28), (19, 29), (18, 29), (12, 29)})
+	# kalkan: altın çerçeve, takım rengi, beyaz şerit (chevron)
+	sh = rect(7, 14, 16, 19) | rect(8, 20, 15, 20) | rect(9, 21, 14, 21) | rect(10, 22, 13, 22) | rect(11, 23, 12, 23)
+	part(im, sh, GOLD_D)
+	inner = rect(8, 15, 15, 19) | rect(9, 20, 14, 20) | rect(10, 21, 13, 21) | rect(11, 22, 12, 22)
+	fill(im, inner, T["m"])
+	fill(im, rect(8, 15, 8, 19) | rect(8, 15, 15, 15), T["l"])
+	fill(im, {(9, 19), (10, 18), (11, 17), (12, 17), (13, 18), (14, 19), (10, 19), (13, 19)}, WHITE)
+	fill(im, {(7, 14), (8, 14)}, GOLD)
+	# muhafız: mazgal arasında miğfer (ön taraftaki boşlukta)
+	gx = 16 if d == 1 else 7
+	up = -1 if atk and f in (0, 1) else 0
+	helm = circ(gx, 5 + up, 1.6)
+	part(im, helm, STEEL_D)
+	fill(im, {(gx, 4 + up), (gx - 1, 4 + up)}, STEEL)
+	fill(im, {(gx, 5 + up), (gx + d, 5 + up)}, OL)
+	part(im, {(gx, 2 + up), (gx - d, 2 + up)}, T["m"])  # tepelik
+	# siper + dişler (tek küme: çerçeve aralarında kesilmez)
+	merl = rect(2, 3, 4, 6) | rect(10, 3, 13, 6) | rect(19, 3, 21, 6)
+	part(im, rect(2, 7, 21, 10) | merl, STONE)
+	fill(im, rect(2, 7, 21, 7) | {(x, 3) for x, _ in merl}, STONE_L)
+	fill(im, rect(2, 10, 21, 10) | {(4, 4), (4, 5), (4, 6), (13, 4), (13, 5), (13, 6), (21, 4), (21, 5), (21, 6)}, STONE_D)
+	fill(im, {(6, 8), (6, 9), (17, 8), (17, 9), (11, 8), (12, 9)}, STONE_D)
+	if atk and f < 2:  # arbalet: siperin üstünden nişan, 1'de ateş (geri teper)
+		bk = -d if f == 1 else 0
+		tip = gx + 5 * d + bk
+		part(im, line(gx + d + bk, 4 + up, tip, 4 + up, 1), WOOD_D)
+		part(im, {(tip, 3 + up), (tip, 5 + up), (tip, 4 + up)}, STEEL)
+		if f == 0:
+			fill(im, {(tip + d, 4 + up)}, STEEL)
+		else:
+			x0, x1 = (tip + 2, TW_W) if d == 1 else (0, tip - 1)
+			speed_lines(im, x0, x1, (4 + up,), (255, 250, 220, 230), seed=11)
+			spark_star(im, tip + 2 * d, 4 + up, 2)
+	if atk and f == 2:
+		smoke_puff(im, gx + 4 * d, 3, 1.8, 0.5, 12)
+	if state == "damaged":
+		carve(im, mx(rect(19, 1, 23, 6) | {(21, 7), (20, 7)}, TW_W, d))  # öndeki diş düştü
+		crack(im, zig((9, 13), (10, 16), (9, 18), (11, 21)) | zig((17, 20), (16, 23), (17, 26)) | zig((6, 21), (5, 24)))
+		fill(im, mx({(15, 16), (15, 17), (14, 16)}, TW_W, d), STONE_D)  # kalkanda kopuk boya
+		part(im, mx(rect(20, 28, 21, 29), TW_W, d), STONE_L)
+		smoke_puff(im, 11.5 + 7 * d, 2, 2.2, 0.7, 7)
+	return im
+
+
+def tower_base(team, state="idle", f=0):
+	"""Kale kulesi (yıkılamaz): kaledeki kulelerle aynı dil. Taş gövde, altın şeritli galeri, takım renkli sivri çatı,
+	tepede dalgalanan bayrak, ışıklı pencerede okçu, meşaleler, altın taçlı sancak. Oyuncu kulelerinden iri."""
+	T = TEAMS[team]
+	d = tdir(team)
+	im = Img(TB_W, TB_H, 0, TB_TOP)  # bayrak için üstte TB_TOP piksel pay: çizim y = -TB_TOP'tan başlar
+	atk = state == "attack"
+	shadow(im, 15.5, 46, 14, 2)
+	brick_fill(im, rect(7, 21, 24, 41) | rect(6, 42, 25, 45), 21, 63)
+	fill(im, rect(6, 42, 25, 42), STONE_L)
+	moss(im, {(6, 45), (7, 45), (6, 44), (8, 45), (25, 45), (24, 45), (25, 44), (16, 45)})
+	for x in (9, 22):
+		fill(im, rect(x, 34, x, 37), OL)  # mazgallar
+	# pencere: kemerli, içi ışıklı; okçu silueti
+	win = rect(13, 26, 18, 31) | rect(14, 25, 17, 25)
+	part(im, win, EMBER)
+	glow = GLOW if atk and f == 1 else GLOW_D
+	fill(im, rect(13, 27, 18, 31) | rect(14, 26, 17, 26), glow)
+	fill(im, rect(15, 28, 16, 28) | rect(14, 30, 17, 31) | {(15, 29), (16, 29)}, DARK_IN)  # okçu silueti
+	fill(im, rect(13, 32, 18, 32), STONE_L)  # pencere eşiği
+	ax = 15 + 3 * d if d == 1 else 16 + 3 * d
+	if atk and f == 0:  # ok ucu pencereden dışarı
+		fill(im, line(15.5 + d, 29, ax + d, 29, 1), WOOD_L)
+		part(im, {(ax + 2 * d, 29)}, STEEL)
+	elif atk and f == 1:
+		x0, x1 = (ax + 3, TB_W) if d == 1 else (0, ax - 2)
+		speed_lines(im, x0, x1, (29,), (255, 250, 220, 230), seed=13)
+		spark_star(im, ax + 2 * d, 29, 3)
+	elif atk and f == 2:
+		smoke_puff(im, ax + 2 * d, 27, 2.2, 0.55, 14)
+	for tx in (10, 21):  # meşaleler: duvar kancası + alev
+		fill(im, {(tx, 29), (tx, 30)}, WOOD_D)
+		fill(im, {(tx, 31)}, STEEL_D)
+		part(im, {(tx, 27), (tx, 28), (tx, 26)}, (255, 150, 40, 255), ol=None)
+		fill(im, {(tx, 28)}, (255, 226, 110, 255))
+	# altın taçlı takım sancağı (duvara asılı)
+	fill(im, rect(12, 34, 19, 34), WOOD_D)
+	ban = rect(12, 35, 19, 41) - {(15, 41), (16, 41)}
+	part(im, ban, T["m"])
+	fill(im, rect(12, 35, 12, 40), T["l"])
+	fill(im, rect(12, 35, 19, 35), T["d"])
+	fill(im, {(13, 37), (15, 37), (16, 37), (18, 37)} | rect(13, 38, 18, 39), GOLD)
+	fill(im, rect(13, 39, 18, 39), GOLD_D)
+	fill(im, {(15, 38), (16, 38)}, WHITE)
+	# galeri: altın şerit, altında dökme delikleri
+	part(im, rect(4, 17, 27, 20), STONE)
+	fill(im, rect(4, 17, 27, 17), STONE_L)
+	fill(im, {(x, y) for x in (8, 12, 19, 23) for y in (18, 19)}, STONE_D)
+	fill(im, {(9, 22), (12, 22), (15, 22), (16, 22), (19, 22), (22, 22)}, OL)
+	for s in ({(5, 21), (6, 21), (7, 21), (6, 22), (7, 22), (7, 23)},):  # konsollar
+		part(im, s | mx(s, TB_W, -1), STONE_L)
+	fill(im, rect(4, 20, 27, 20), GOLD_D)  # altın şerit (konsolların çerçevesinden sonra)
+	fill(im, {(x, 20) for x in range(5, 27, 3)}, GOLD)
+	# sivri çatı: kiremit sıraları, sol taraf açık, saçak koyu
+	roof = set()
+	for y in range(5, 17):
+		half = y - 4 if y < 16 else 13
+		roof |= {(x, y) for x in range(16 - half, 16 + half)}
+	part(im, roof, T["m"])
+	for y in range(5, 17):
+		xs = [x for x, yy in roof if yy == y]
+		lo, hi = min(xs), max(xs)
+		fill(im, {(x, y) for x in range(lo, lo + max(1, int((hi - lo) * 0.35)) + 1)}, T["l"])
+		fill(im, {(hi, y)}, T["d"])
+		if y % 3 == 1:
+			fill(im, {(x, y) for x in range(lo + 1, hi) if (x + y // 3) % 2 == 0}, T["d"])
+	fill(im, rect(3, 16, 28, 16), T["d"])
+	# tepe: altın topuz, direk, dalgalanan bayrak (atışta savrulur)
+	px = 16 if d == 1 else 15
+	part(im, rect(px, -3, px, 4), WOOD_D)
+	part(im, {(px, -4)}, GOLD)
+	wave = f if atk else 0  # atışta bayrak dalgalanır
+	cloth = set()
+	for i in range(1, 9):
+		wv = (0, 0, 1, 1, 1, 0, 0, 0)[(i - 1 + wave * 2) % 8]
+		top = -3 + wv
+		bot = (0, 0, 0, -1, -1, -1, -2, -2)[i - 1] + wv
+		cloth |= {(px + d * i, y) for y in range(top, bot + 1)}
+	part(im, cloth, T["m"])
+	fill(im, {(x, y) for x, y in cloth if (x, y - 1) not in cloth}, T["l"])
+	fill(im, {(x, y) for x, y in cloth if (x, y + 1) not in cloth and abs(x - px) > 1}, T["d"])
+	fill(im, {(px + 2 * d, -2 + (0, 0, 1)[wave % 3])}, WHITE)
+	fill(im, {(15, 4), (16, 4)}, GOLD)  # çatı tepesinde altın topuz
+	return im
+
+
+def rubble(im, cx, base_y, w, h, seed, n=None):
+	"""Moloz yığını: arkadan öne küçük taşlar (her biri koyu çerçeveli), tümsek biçiminde."""
+	r = random.Random(seed)
+	n = n or int(w * h * 0.9)
+	stones = []
+	for _ in range(n):
+		u = r.uniform(-1, 1)
+		top = base_y - 1 - h * (1 - u * u)
+		stones.append((r.uniform(top, base_y - 1), cx + u * w, r.choice((1, 2, 2)), r.random()))
+	for y, x, s, t in sorted(stones):
+		x, y = int(round(x)), int(round(y))
+		part(im, rect(x, y, x + s, y + (1 if s > 1 else 0)), STONE_L if t < 0.4 else (STONE if t < 0.9 else STONE_D))
+		im.set(x, y, STONE_L)  # taşın sol üst köşesinde ışık
+
+
+def destroy_frame(src, f, team, seed, ground, wood=True):
+	"""Yıkılma karesi (src: hasarlı kule). 0 sarsıntı + çatlak + taban tozu, 1 üst yarı çöker (düşen taşlar),
+	2 kütük + moloz + büyük toz, 3 moloz yığını ve takım rengi bez parçası."""
+	T = TEAMS[team]
+	w, h = src.w, src.h
+	cx = (w - 1) / 2
+	r = random.Random(seed * 10 + f)
+	im = Img(w, h)
+	body_h = ground - 2
+	if f == 0:
+		im.blit(src, 1, 0)
+		for _ in range(3):
+			x, y = r.randint(int(w * 0.25), int(w * 0.7)), r.randint(int(h * 0.35), ground - 4)
+			crack(im, zig((x, y), (x + r.choice((-1, 1)), y + 2), (x, y + 4)))
+		for sx in (cx - w * 0.38, cx + w * 0.38):
+			smoke_puff(im, sx, ground - 1, 2.5, 0.75, seed + int(sx))
+		return im
+	if f in (1, 2):
+		im.blit(src, 0, 0)
+		cut = ground - int(body_h * (0.55 if f == 1 else 0.28))
+		jag, cut_pts = 0, set()
+		for x in range(w):
+			jag = max(-2, min(2, jag + r.choice((-1, 0, 1))))
+			cut_pts |= {(x, y) for y in range(0, cut + jag)}
+		carve(im, cut_pts)
+		if f == 1:  # düşen parçalar
+			for k in range(7):
+				bx = int(cx + r.uniform(-w * 0.45, w * 0.45))
+				by = int(cut - r.uniform(2, 10))
+				col = (WOOD if wood and k % 3 == 0 else (STONE_L if k % 2 else STONE))
+				part(im, rect(bx, by, bx + r.choice((1, 2)), by + 1), col)
+			part(im, {(int(cx) + 3, cut - 6), (int(cx) + 4, cut - 6), (int(cx) + 4, cut - 5)}, T["m"])
+			for k, ox in enumerate((-4, 3)):
+				smoke_puff(im, cx + ox, cut - 1, 3, 0.8, seed + 30 + k)
+		else:
+			rubble(im, cx, ground + 1, w * 0.42, 3, seed + 2)
+			for k, (ox, oy, rr) in enumerate(((-5, -3, 3.5), (4, -5, 4), (0, -9, 3))):
+				smoke_puff(im, cx + ox, ground + oy, rr, 0.85, seed + 40 + k)
+		return im
+	shadow(im, cx, ground + 1, w * 0.45, 1.6)
+	rubble(im, cx, ground + 1, w * 0.45, 3.5, seed + 3)
+	part(im, {(int(cx) - 2, ground - 3), (int(cx) - 1, ground - 3), (int(cx), ground - 2), (int(cx) - 1, ground - 2)}, T["m"])
+	if wood:
+		part(im, line(cx + 3, ground - 2, cx + 6, ground - 3, 1), WOOD_D)
+	smoke_puff(im, cx + 2, ground - 7, 2.2, 0.35, seed + 50)
+	return im
+
+
+TOWERS = [("tower_archer", tower_archer, 29, True), ("tower_stone", tower_stone, 29, False), ("tower_base", tower_base, 45, None)]
+
+
 # ---------------------------------------------------------------- minik 3x5 yazı tipi (önizleme etiketleri)
 FONT = {
 	"A": "010101111101101", "B": "110101110101110", "C": "011100100100011", "D": "110101101101110",
@@ -1278,6 +1656,15 @@ def build():
 				files["units/%s/u_%s_attack.png" % (team, kind)] = strip([unit_frame(kind, team, "attack", f) for f in range(UNIT_ATK[kind])])
 		files["buildings/%s_castle.png" % team] = castle(team)
 		files["buildings/%s_flag.png" % team] = flag_strip(team)
+		for kind, fn, ground, wood in TOWERS:
+			key = "buildings/%s_%s" % (kind, team)
+			files[key + ".png"] = strip([fn(team, "idle", 0)])  # strip: çizim kaydırması (ox/oy) olmayan düz kopya
+			files[key + "_attack.png"] = strip([fn(team, "attack", f) for f in range(TOWER_FRAMES["attack"])])
+			if wood is not None:  # kale kulesi yıkılamaz: hasarlı / yıkılma karesi yok
+				dmg = strip([fn(team, "damaged", 0)])
+				files[key + "_damaged.png"] = dmg
+				files[key + "_destroy.png"] = strip([destroy_frame(dmg, f, team, len(kind) * 7, ground, wood)
+					for f in range(TOWER_FRAMES["destroy"])])
 	files["terrain/grass.png"] = strip([grass_tile(s) for s in (1, 2, 3)])
 	files["terrain/dirt.png"] = strip([dirt_tile(s) for s in (11, 12)])
 	files["terrain/stone.png"] = strip([stone_tile(s) for s in (21, 22)])
@@ -1620,6 +2007,99 @@ def preview_weapons(files):
 		sh.save(os.path.join(OUT, "preview_silah_%s.png" % name))
 
 
+def grass_sheet(files, w, h, seed=5):
+	"""Önizleme zemini: çimen döşemeleri 2 kat."""
+	sh = Img(w, h)
+	g = files["terrain/grass.png"]
+	rr = random.Random(seed)
+	for ty in range(0, h, 32):
+		for tx in range(0, w, 32):
+			sh.blit(crop(g, rr.randrange(3) * 16, 0, 16, 16).scaled(2), tx, ty)
+	return sh
+
+
+def label(sh, x, y, s, k=1, col=(255, 255, 255, 255)):
+	text(sh, x + 1, y + 1, s, OL, k)
+	text(sh, x, y, s, col, k)
+
+
+def preview_towers(files):
+	"""preview_kule.png (çimen zemin): üstte 3 kule x 2 takım (bekleme) + 3 market ikonu, 4 kat; ortada tüm kareler
+	(bekleme / hasarlı / atış 3 / yıkılma 4), 3 kat; altta oyundaki boyut (2 kat = 1080p) kahraman ve birimlerle."""
+	try:  # ikonlar make_ui.py'de üretilir; önizleme için oradan çağrılır
+		import make_ui
+		icons = [(n, l, make_ui.ICONS[n]()) for n, l in (("tower_archer", "IKON OKCU KULESI"),
+			("tower_stone", "IKON TAS KULE"), ("unit_healer", "IKON SIFACI"))]
+	except Exception as e:  # noqa: BLE001
+		print("UYARI: ikonlar önizlemeye eklenemedi:", e)
+		icons = []
+	names = {"tower_archer": "OKCU KULESI", "tower_stone": "TAS KULE", "tower_base": "KALE KULESI"}
+	W, H = 1180, 1300
+	sh = grass_sheet(files, W, H)
+	label(sh, 8, 6, "KULELER VE MARKET IKONLARI - 4 KAT (UST), TUM KARELER 3 KAT (ORTA), OYUNDAKI BOYUT 2 KAT (ALT)", 2,
+		(255, 230, 130, 255))
+	# 1) bekleme kareleri + ikonlar, alt hizalı
+	K = 4
+	base_y = 30 + TB_H * K
+	x = 12
+	for kind, _, _, _ in TOWERS:
+		for team in TEAMS:
+			im = files["buildings/%s_%s.png" % (kind, team)]
+			blit_a(sh, im.scaled(K), x, base_y - im.h * K)
+			label(sh, x, base_y + 6, names[kind])
+			label(sh, x, base_y + 14, "MAVI" if team == "blue" else "KIRMIZI")
+			x += im.w * K + 22
+	for n, lab, im in icons:
+		blit_a(sh, im.scaled(K), x, base_y - im.h * K)
+		label(sh, x, base_y + 6, lab)
+		x += im.w * K + 40
+	# 2) tüm kareler
+	K = 3
+	y = base_y + 36
+	for kind, _, _, wood in TOWERS:
+		for team in TEAMS:
+			key = "buildings/%s_%s" % (kind, team)
+			seq = [("BEKLEME", files[key + ".png"], 0)]
+			if wood is not None:
+				seq.append(("HASARLI", files[key + "_damaged.png"], 0))
+			fw = files[key + ".png"].w
+			seq += [("ATIS %d" % f, files[key + "_attack.png"], f) for f in range(TOWER_FRAMES["attack"])]
+			if wood is not None:
+				seq += [("YIKILMA %d" % f, files[key + "_destroy.png"], f) for f in range(TOWER_FRAMES["destroy"])]
+			fh = files[key + ".png"].h
+			label(sh, 12, y, "%s %s" % (names[kind], "MAVI" if team == "blue" else "KIRMIZI"), 1, (255, 230, 130, 255))
+			x = 12
+			for lab, st, f in seq:
+				label(sh, x, y + 10, lab)
+				blit_a(sh, crop(st, f * fw, 0, fw, fh).scaled(K), x, y + 20)
+				x += fw * K + 12
+			y += fh * K + 30
+	# 3) oyundaki boyut: kale + kale kuleleri, oyuncu kuleleri, kahraman ve birimler (1 sanat pikseli = 2 ekran pikseli)
+	K = 2
+	label(sh, 12, y, "OYUNDAKI BOYUT (2 KAT = 1080P): KALE, KALE KULELERI, OYUNCU KULELERI, KAHRAMAN, BIRIMLER", 1, (255, 230, 130, 255))
+	gy = y + 12 + TB_H * K + 8
+	x = 12
+	for team in TEAMS:
+		c = files["buildings/%s_castle.png" % team]
+		tb = files["buildings/tower_base_%s.png" % team]
+		blit_a(sh, tb.scaled(K), x, gy - tb.h * K)
+		blit_a(sh, c.scaled(K), x + tb.w * K + 4, gy - c.h * K + 10)
+		x += tb.w * K + c.w * K + 30
+		for kind in ("tower_archer", "tower_stone"):
+			im = files["buildings/%s_%s.png" % (kind, team)]
+			blit_a(sh, im.scaled(K), x, gy - im.h * K)
+			x += im.w * K + 12
+		hero = crop(files["units/%s/warrior_idle.png" % team], 0, 0, 32, 32)
+		blit_a(sh, hero.scaled(K), x, gy - 32 * K + 6)
+		x += 32 * K + 4
+		for u in ("archer", "healer"):
+			im = crop(files["units/%s/u_%s_idle.png" % (team, u)], 0, 0, 24, 24)
+			blit_a(sh, im.scaled(K), x, gy - 24 * K + 5)
+			x += 24 * K + 4
+		x += 30
+	sh.save(os.path.join(OUT, "preview_kule.png"))
+
+
 if __name__ == "__main__":
 	files = build()
 	for path, im in files.items():
@@ -1627,4 +2107,5 @@ if __name__ == "__main__":
 	preview(files)
 	preview_attacks(files)
 	preview_weapons(files)
+	preview_towers(files)
 	print("tamam: %d PNG -> %s" % (len(files), os.path.normpath(OUT)))
